@@ -18,4 +18,9 @@ def register_all_tools() -> None:
     from pyharness.tools.registry import get_registry
 
     registry = get_registry()
-    registry.register_all(ALL_BUILTIN_TOOLS)
+    for tool in ALL_BUILTIN_TOOLS:
+        registry.register(tool)
+
+
+# Auto-register built-in tools at import time so the registry is never empty.
+register_all_tools()

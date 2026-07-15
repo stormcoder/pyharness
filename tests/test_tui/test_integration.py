@@ -86,12 +86,14 @@ class TestAgentSwitching:
             f"First switch should go to plan (index 1), "
             f"got {app._current_agent_index}"
         )
+        # With 4 agents (build, plan, general, explore), expect index 2 after another switch
+        expected_after_two = (initial + 2) % len(app.AGENTS)
         app._current_agent_index = (
             app._current_agent_index + 1
         ) % len(app.AGENTS)
-        assert app._current_agent_index == 0, (
-            f"Second switch should wrap back to build (index 0), "
-            f"got {app._current_agent_index}"
+        assert app._current_agent_index == expected_after_two, (
+            f"With {len(app.AGENTS)} agents, second switch should be "
+            f"index {expected_after_two}, got {app._current_agent_index}"
         )
 
     def test_action_switch_agent_preserves_valid_agent(self) -> None:

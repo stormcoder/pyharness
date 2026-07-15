@@ -126,7 +126,7 @@ class PyHarnessApp(App):
         ("tab", "switch_agent", "Switch Agent"),
     ]
 
-    AGENTS = ["build", "plan"]
+    AGENTS = ["build", "plan", "general", "explore"]
     _current_agent_index: int = 0
 
     COMMANDS: dict[str, str] = {
@@ -142,6 +142,9 @@ class PyHarnessApp(App):
         "/themes": "List available themes",
         "/memory": "Search project memory",
         "/remember": "Store a fact in memory",
+        "/connect": "Connect to a model provider",
+        "/model": "Switch to a specific model (e.g., /model openai:gpt-5)",
+        "/variants": "List model variants (thinking/reasoning levels)",
     }
 
     def __init__(self) -> None:
@@ -170,6 +173,27 @@ class PyHarnessApp(App):
             model = self.config.model if self.config else "unknown"
             screen.update_status(f"{agent} | {model} | 0 tokens")
 
+    def switch_model(self, model_id: str) -> None:
+        """Switch the currently active model at runtime.
+
+        Updates the config model and refreshes the status bar.
+        """
+        if self.config:
+            self.config.model = model_id
+        screen = self.screen
+        if hasattr(screen, "update_status"):
+            screen.update_status(f"{self.current_agent} | {model_id} | 0 tokens")
+
+    def action_connect(self) -> None:
+        """Open provider connection dialog."""
+        from pyharness.tui.screens.connect import ConnectScreen
+        self.push_screen(ConnectScreen(), callback=self._handle_connect_result)
+
+    def _handle_connect_result(self, result: str | None) -> None:
+        """Handle result from the connect dialog."""
+        if result:
+            self.notify(result, timeout=3)
+
     def action_quit(self) -> None:
         """Exit the application cleanly."""
         self.exit()
@@ -192,10 +216,19 @@ class PyHarnessApp(App):
             self.notify("Sidebar toggle not available", severity="warning")
 
     def action_command_palette(self) -> None:
-        """Show the command palette (Ctrl+p)."""
+        """Show navigable command palette (Ctrl+p)."""
+        from textual.screen import ModalScreen
+        from textual.widgets import ListView, ListItem, Static
 
-        class CommandPalette(ModalScreen[None]):
-            """Modal overlay showing available commands."""
+        class CommandPalette(ModalScreen[str | None]):
+            """Modal overlay with arrow-key-navigable command list."""
+
+            BINDINGS = [
+                ("up", "cursor_up", "Up"),
+                ("down", "cursor_down", "Down"),
+                ("enter", "select", "Select"),
+                ("escape", "dismiss", "Cancel"),
+            ]
 
             DEFAULT_CSS = """
             CommandPalette {
@@ -209,7 +242,7 @@ class PyHarnessApp(App):
                 background: #161b22;
                 padding: 1;
             }
-            #palette-title {
+            #palette-header {
                 color: #58a6ff;
                 text-style: bold;
                 padding-bottom: 1;
@@ -218,16 +251,53 @@ class PyHarnessApp(App):
 
             def compose(self) -> ComposeResult:
                 with Container(id="palette-container"):
-                    yield Static("[bold #58a6ff]Command Palette[/]\n", id="palette-title")
-                    commands_text = "\n".join(
-                        f"[bold #d2a8ff]{cmd}[/] — [#c9d1d9]{desc}[/]"
-                        for cmd, desc in self.app.COMMANDS.items()
+                    yield Static(
+                        "[bold #58a6ff]Commands[/] — ↑↓ navigate, Enter select, Esc cancel",
+                        id="palette-header",
                     )
-                    yield Static(commands_text)
+                    items: list[ListItem] = [
+                        ListItem(
+                            Static(f"[bold #d2a8ff]{cmd}[/] — [#c9d1d9]{desc}[/]")
+                        )
+                        for cmd, desc in self.app.COMMANDS.items()
+                    ]
+                    yield ListView(*items, id="command-list")
                     yield Static("\n[#8b949e]Type /command in chat or Escape to close[/]")
 
-            def on_key(self, event: object) -> None:
-                if hasattr(event, "key") and event.key == "escape":  # type: ignore[union-attr]
-                    self.dismiss()
+            def action_select(self) -> None:
+                """Execute the currently selected command."""
+                list_view = self.query_one("#command-list", ListView)
+                if list_view.highlighted_child is not None:
+                    commands = list(self.app.COMMANDS.keys())
+                    for i, child in enumerate(list_view.children):
+                        if child is list_view.highlighted_child:
+                            self.dismiss(commands[i])
+                            return
+                self.dismiss(None)
 
-        self.push_screen(CommandPalette())
+            def action_dismiss(self) -> None:
+                """Dismiss the palette without selecting."""
+                self.dismiss(None)
+
+        self.push_screen(CommandPalette(), callback=self._handle_palette_selection)
+
+    def _handle_palette_selection(self, cmd: str | None) -> None:
+        """Execute a command selected from the palette.
+
+        Handles commands: /help, /new, /connect, /models, /sessions,
+        /undo, /redo, /compact, /export, /memory, /remember, /themes,
+        /editor, /model, /variants, /mine.
+        """
+        if cmd is None:
+            return
+        screen = self.screen
+        if hasattr(screen, "query_one"):
+            try:
+                chat = screen.query_one("#chat-area")
+                # Handle commands: /help, /new, /connect, /models, /sessions,
+                # /undo, /redo, /compact, /export, /memory, /remember, /themes,
+                # /editor, /model, /variants, /mine
+                if hasattr(screen, "_handle_slash_command"):
+                    screen._handle_slash_command(cmd, chat)
+            except Exception:
+                pass

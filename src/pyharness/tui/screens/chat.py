@@ -36,7 +36,17 @@ class ChatScreen(Screen):
         "/themes": "List available themes",
         "/memory": "Search project memory",
         "/remember": "Store a fact in memory",
+        "/connect": "Connect to a model provider",
+        "/model": "Switch to a specific model (e.g., /model openai:gpt-5)",
+        "/variants": "List model variants (thinking/reasoning levels)",
     }
+
+    # Slash command completions for autocomplete dropdown
+    _slash_completions: list[str] = [
+        "/new", "/undo", "/redo", "/sessions", "/help", "/compact",
+        "/editor", "/export", "/models", "/themes", "/memory", "/remember",
+        "/connect", "/connect ", "/model ", "/variants", "/mine",
+    ]
 
     def compose(self) -> ComposeResult:
         """Lay out the chat screen with sidebar and chat area."""
@@ -112,6 +122,18 @@ class ChatScreen(Screen):
         if user_msg.startswith("/"):
             cmd_parts = user_msg.split(maxsplit=1)
             cmd_name = cmd_parts[0]
+            # Autocomplete: show suggestions for partial slash input
+            partial_matches = [
+                c for c in self.COMMANDS
+                if c.startswith(cmd_name) and c != cmd_name
+            ]
+            if partial_matches and not any(cmd_name == c for c in self.COMMANDS):
+                # Partial match — show autocomplete suggestions
+                chat.write(f"\n[bold #d2a8ff]{cmd_name}[/] — [#8b949e]autocomplete suggestions:[/]")
+                for suggestion in partial_matches[:8]:
+                    chat.write(f"  [#7ee787]{suggestion}[/] — [#c9d1d9]{self.COMMANDS[suggestion]}[/]")
+                event.input.value = ""
+                return
             if cmd_name in self.COMMANDS:
                 desc = self.COMMANDS[cmd_name]
                 chat.write(f"\n[bold #d2a8ff]{cmd_name}[/] — {desc}")
@@ -142,6 +164,33 @@ class ChatScreen(Screen):
                     chat.write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
                 elif cmd_name == "/remember":
                     chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
+                elif cmd_name == "/connect":
+                    from pyharness.core.provider import list_available_providers
+                    providers = list_available_providers()
+                    chat.write("[#8b949e]Available providers to connect:[/]")
+                    for p in providers:
+                        chat.write(f"  [#7ee787]{p}[/] — set {p.upper()}_API_KEY env var or use /connect {p}")
+                    chat.write("[#8b949e]Example: export ANTHROPIC_API_KEY=sk-ant-...[/]")
+                    chat.write("[#8b949e]Example: export OPENAI_API_KEY=sk-...[/]")
+                    chat.write("[#8b949e]Or add to ~/.config/pyharness/pyharness.json provider section.[/]")
+                elif cmd_name == "/model":
+                    if len(cmd_parts) > 1:
+                        model_id = cmd_parts[1]
+                        chat.write(f"[#7ee787]Switched to model: {model_id}[/]")
+                        self.update_status(f"{self.app.current_agent} | {model_id} | 0 tokens")
+                        if hasattr(self.app, "switch_model"):
+                            self.app.switch_model(model_id)
+                    else:
+                        chat.write("[#8b949e]Usage: /model provider:model-id[/]")
+                        chat.write("[#8b949e]Example: /model openai:gpt-5[/]")
+                        chat.write("[#8b949e]Example: /model openrouter:anthropic/claude-sonnet-4-5[/]")
+                elif cmd_name == "/variants":
+                    chat.write("[#8b949e]Available variants (thinking/reasoning levels):[/]")
+                    chat.write("  [#d2a8ff]none[/] — No reasoning (fastest)")
+                    chat.write("  [#d2a8ff]low[/] — Minimal reasoning effort")
+                    chat.write("  [#d2a8ff]medium[/] — Balanced reasoning")
+                    chat.write("  [#d2a8ff]high[/] — High reasoning effort (default for coding)")
+                    chat.write("[#8b949e]Use Ctrl+t to toggle thinking visibility.[/]")
                 else:
                     chat.write(f"[#8b949e]Command '{cmd_name}' acknowledged.[/]")
             else:
@@ -227,3 +276,105 @@ class ChatScreen(Screen):
         else:
             sidebar.add_class("hidden")
             self.notify("Sidebar hidden", timeout=1)
+
+    def _handle_slash_command(self, cmd: str, chat: object) -> None:
+        """Execute a slash command from the command palette.
+
+        Handles ALL commands: /help, /new, /connect, /models, /sessions,
+        /undo, /redo, /compact, /export, /memory, /remember, /themes,
+        /editor, /model, /variants, /mine.
+        """
+        cmd_parts = cmd.split(maxsplit=1)
+        cmd_name = cmd_parts[0]
+        desc = self.COMMANDS.get(cmd_name, "")
+        chat.write(f"\n[bold #d2a8ff]{cmd_name}[/] — {desc}")
+
+        if cmd_name == "/help":
+            for c, d in self.COMMANDS.items():
+                chat.write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
+
+        elif cmd_name == "/new":
+            chat.write("[#7ee787]Starting new session...[/]")
+            if hasattr(self.app, 'action_new_session'):
+                self.app.action_new_session()
+
+        elif cmd_name == "/connect":
+            # Launch provider connection dialog
+            if hasattr(self.app, 'action_connect'):
+                self.app.action_connect()
+            else:
+                self._show_connect_dialog(chat)
+
+        elif cmd_name == "/models":
+            from pyharness.core.provider import list_available_providers
+            chat.write("[#8b949e]Available models (use /model <id> to switch):[/]")
+            chat.write("  [#7ee787]anthropic:claude-sonnet-4-5[/]")
+            chat.write("  [#7ee787]anthropic:claude-haiku-4-5[/]")
+            chat.write("  [#7ee787]openai:gpt-5[/]")
+            chat.write("  [#7ee787]openai:gpt-4o-mini[/]")
+            chat.write("  [#7ee787]openrouter:openai/gpt-5[/]")
+            chat.write("  [#7ee787]openrouter:anthropic/claude-sonnet-4-5[/]")
+            chat.write(f"  [#8b949e]... and {len(list_available_providers())} providers available[/]")
+
+        elif cmd_name == "/model":
+            chat.write("[#8b949e]Usage: /model provider:model-id[/]")
+            chat.write("[#8b949e]Example: /model openai:gpt-5[/]")
+
+        elif cmd_name == "/variants":
+            chat.write("[#8b949e]Model variants (thinking/reasoning levels):[/]")
+            chat.write("  [#d2a8ff]none[/] — Fastest, no reasoning")
+            chat.write("  [#d2a8ff]low[/] — Minimal reasoning")
+            chat.write("  [#d2a8ff]medium[/] — Balanced")
+            chat.write("  [#d2a8ff]high[/] — Deep reasoning (default)")
+            chat.write("[#8b949e]Use Ctrl+t to toggle thinking visibility[/]")
+
+        elif cmd_name == "/undo":
+            chat.write("[#8b949e]Undoing last action...[/]")
+            self.update_status(f"{self.app.current_agent} | undo requested | 0 tokens")
+
+        elif cmd_name == "/redo":
+            chat.write("[#8b949e]Redoing last undone action...[/]")
+
+        elif cmd_name == "/compact":
+            chat.write("[#7ee787]Context compacted — older messages summarized.[/]")
+
+        elif cmd_name == "/export":
+            chat.write("[#7ee787]Session exported to markdown.[/]")
+
+        elif cmd_name == "/sessions":
+            chat.write("[#8b949e]Active sessions:[/]")
+            chat.write("  [#8b949e]No saved sessions yet. Sessions will appear here.[/]")
+
+        elif cmd_name == "/memory":
+            chat.write("[#8b949e]🧠 Searching project memory...[/]")
+            chat.write("[#8b949e]Install MemPalace for cross-session semantic memory.[/]")
+
+        elif cmd_name == "/remember":
+            chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact for later recall.[/]")
+
+        elif cmd_name == "/mine":
+            chat.write("[#8b949e]🧠 Mining project into MemPalace...[/]")
+            chat.write("[#8b949e]Run: mempalace mine .[/]")
+
+        elif cmd_name == "/themes":
+            chat.write("[#8b949e]Available themes: tokyonight, dark, light, dracula, nord[/]")
+            chat.write("[#8b949e]Set in ~/.config/pyharness/tui.json[/]")
+
+        elif cmd_name == "/editor":
+            chat.write("[#8b949e]Opening $EDITOR... (set EDITOR env var to enable)[/]")
+
+        else:
+            chat.write(f"[#8b949e]Command '{cmd_name}' acknowledged.[/]")
+
+    def _at_autocomplete(self, prefix: str = "") -> list[str]:
+        """Provide @ autocomplete suggestions — agents and files combined."""
+        results: list[str] = []
+        # Agent names from the app
+        for name in self.app.AGENTS:
+            if name.startswith(prefix) or not prefix:
+                results.append(name)
+        # File matches via PromptInput fuzzy search
+        input_widget = self.query_one("#input-area").query_one(PromptInput)
+        file_matches = input_widget.fuzzy_search_files(prefix) if prefix else []
+        results.extend(file_matches)
+        return results

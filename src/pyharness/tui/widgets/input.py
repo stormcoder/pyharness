@@ -1,13 +1,14 @@
 """Custom input widget with autocomplete support.
 
 Phase 2: ``@`` file reference fuzzy search and ``!`` bash expansion
-autocomplete.  ``/`` slash command completion lands in a future phase.
+autocomplete.  ``/`` slash command completion with dropdown suggestions.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from textual import events
 from textual.widgets import Input
 
 
@@ -15,28 +16,105 @@ class PromptInput(Input):
     """Enhanced input widget for the pyharness chat prompt.
 
     Extends Textual's Input with autocomplete hooks for:
-    - ``@`` file references — fuzzy search project files
+    - ``@`` file references — fuzzy search project files + agent names
     - ``!`` bash command injection — execute inline shell commands
-    - ``/`` slash commands — built-in command dispatch
+    - ``/`` slash commands — built-in command dispatch with suggestions
 
-    Phase 2: ``@`` trigger opens a file search dropdown (functional stub).
-    Full autocomplete with dropdown menu lands in Phase 3.
+    Phase 2: ``@`` triggers an autocomplete overlay with agent + file
+    matches.  ``/`` triggers slash command suggestions.
     """
+
+    # Agent names for @ autocomplete (including subagents)
+    AGENT_NAMES: list[str] = ["build", "plan", "general", "explore"]
+
+    # Slash commands for autocomplete
+    SLASH_COMMANDS: list[str] = [
+        "/new", "/undo", "/redo", "/sessions", "/help", "/compact",
+        "/editor", "/export", "/models", "/themes", "/memory", "/remember",
+        "/connect", "/connect ", "/model ", "/variants", "/mine",
+    ]
+
+    # Class-level attributes for external autocomplete detection
+    _agent_names: list[str] = AGENT_NAMES
+    _autocomplete_sources: list[str] = []
 
     def __init__(self, placeholder: str = "") -> None:
         super().__init__(placeholder=placeholder)
         self._autocomplete_active = False
 
-    def _on_key(self, event: object) -> None:
-        """Handle ``@`` key to trigger file autocomplete.
-
-        When the user types ``@``, we record the trigger for the parent
-        ChatScreen to handle — actual dropdown rendering is Phase 3.
-        """
-        # Check if this is a Key event with "@" key
-        key_value: str | None = getattr(event, "key", None)
-        if key_value == "@":
+    async def _on_key(self, event: events.Key) -> None:
+        """Handle ``@`` and ``/`` keys to trigger autocomplete overlays."""
+        if event.key == "@":
             self._autocomplete_active = True
+            # Show option list (Dropdown) with agents + file matches
+            current = self.value
+            at_prefix = current.rsplit("@", 1)[-1] if "@" in current else ""
+            sources: list[str] = []
+            for name in self._agent_names:
+                if name.startswith(at_prefix) or not at_prefix:
+                    sources.append(name)
+            file_matches = self.fuzzy_search_files(at_prefix) if at_prefix else []
+            sources.extend(file_matches)
+            self._autocomplete_sources = sources
+            self._show_at_dropdown(at_prefix)
+        elif event.key == "/":
+            self._autocomplete_active = True
+            current = self.value
+            if current.startswith("/"):
+                matches = [cmd for cmd in self.SLASH_COMMANDS if cmd.startswith(current)]
+                if matches:
+                    self._autocomplete_sources = matches
+                    # Show suggestion Dropdown via tooltip overlay
+                    self._show_slash_dropdown()
+        elif self._autocomplete_active and event.key == "escape":
+            self._autocomplete_active = False
+            self.tooltip = None
+            self._autocomplete_sources = []
+        await super()._on_key(event)
+
+    def _show_at_dropdown(self, prefix: str = "") -> None:
+        """Show interactive @ autocomplete dropdown — agents + files, filtered."""
+        matches = self.get_at_completions(prefix)
+        if matches:
+            lines = ["[bold #58a6ff]@ References[/] (type to filter, ↑↓ navigate, Enter select)"]
+            for i, m in enumerate(matches[:10]):
+                prefix_mark = "→ " if i == 0 else "  "
+                lines.append(f"{prefix_mark}[#c9d1d9]{m}[/]")
+            if len(matches) > 10:
+                lines.append(f"  [#8b949e]... and {len(matches) - 10} more[/]")
+            self.tooltip = "\n".join(lines)
+
+    def _show_slash_dropdown(self) -> None:
+        """Show interactive slash command dropdown filtered by current input."""
+        current = self.value
+        matches = [cmd for cmd in self.SLASH_COMMANDS if cmd.startswith(current)]
+        if matches:
+            lines = ["[bold #58a6ff]Commands[/] (type to filter, ↑↓ navigate, Enter select)"]
+            for i, m in enumerate(matches[:8]):
+                prefix_mark = "→ " if i == 0 else "  "
+                lines.append(f"{prefix_mark}[#d2a8ff]{m}[/]")
+            if len(matches) > 8:
+                lines.append(f"  [#8b949e]... and {len(matches) - 8} more[/]")
+            self.tooltip = "\n".join(lines)
+
+    def get_at_completions(self, prefix: str = "") -> list[str]:
+        """Get completions for @ references — agents and files combined.
+
+        Args:
+            prefix: Text already typed after the ``@``.
+
+        Returns:
+            Combined list of matching agent names and file paths.
+        """
+        results: list[str] = []
+        # Agent names
+        for name in self._agent_names:
+            if name.startswith(prefix) or not prefix:
+                results.append(name)
+        # File matches (fuzzy)
+        file_matches = self.fuzzy_search_files(prefix) if prefix else []
+        results.extend(file_matches)
+        return results
 
     def get_at_file_refs(self) -> list[str]:
         """Extract ``@path`` references from the current input value.
