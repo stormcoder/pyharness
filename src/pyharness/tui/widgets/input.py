@@ -42,6 +42,10 @@ class PromptInput(Input):
         super().__init__(placeholder=placeholder)
         self._autocomplete_active = False
 
+    def on_mount(self) -> None:
+        """Request focus when mounted so cursor starts in input field."""
+        self.focus()
+
     async def _on_key(self, event: events.Key) -> None:
         """Handle ``@`` and ``/`` keys to trigger autocomplete overlays."""
         if event.key == "@":

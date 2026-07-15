@@ -53,7 +53,9 @@ class ChatScreen(Screen):
         with Horizontal():
             # Main chat area
             with Container(id="chat-container"):
-                yield RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
+                rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
+                rich_log.can_focus = False  # CRITICAL: prevents tab focus stealing
+                yield rich_log
                 with Container(id="input-area"):
                     yield PromptInput(
                         placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
@@ -91,6 +93,11 @@ class ChatScreen(Screen):
         )
         # Set initial status
         self.update_status("build | loading... | 0 tokens")
+        # Auto-focus the input field so cursor starts in input
+        try:
+            self.query_one(PromptInput).focus()
+        except Exception:
+            pass
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission.
@@ -165,14 +172,17 @@ class ChatScreen(Screen):
                 elif cmd_name == "/remember":
                     chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
                 elif cmd_name == "/connect":
-                    from pyharness.core.provider import list_available_providers
-                    providers = list_available_providers()
-                    chat.write("[#8b949e]Available providers to connect:[/]")
-                    for p in providers:
-                        chat.write(f"  [#7ee787]{p}[/] — set {p.upper()}_API_KEY env var or use /connect {p}")
-                    chat.write("[#8b949e]Example: export ANTHROPIC_API_KEY=sk-ant-...[/]")
-                    chat.write("[#8b949e]Example: export OPENAI_API_KEY=sk-...[/]")
-                    chat.write("[#8b949e]Or add to ~/.config/pyharness/pyharness.json provider section.[/]")
+                    if hasattr(self.app, 'action_connect'):
+                        self.app.action_connect()
+                    else:
+                        from pyharness.core.provider import list_available_providers
+                        providers = list_available_providers()
+                        chat.write("[#8b949e]Available providers to connect:[/]")
+                        for p in providers:
+                            chat.write(f"  [#7ee787]{p}[/] — set {p.upper()}_API_KEY env var or use /connect {p}")
+                        chat.write("[#8b949e]Example: export ANTHROPIC_API_KEY=sk-ant-...[/]")
+                        chat.write("[#8b949e]Example: export OPENAI_API_KEY=sk-...[/]")
+                        chat.write("[#8b949e]Or add to ~/.config/pyharness/pyharness.json provider section.[/]")
                 elif cmd_name == "/model":
                     if len(cmd_parts) > 1:
                         model_id = cmd_parts[1]

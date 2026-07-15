@@ -167,11 +167,14 @@ class PyHarnessApp(App):
         self._current_agent_index = (self._current_agent_index + 1) % len(self.AGENTS)
         agent = self.AGENTS[self._current_agent_index]
         self.notify(f"Agent: {agent}", timeout=2)
-        # Update status bar on active screen
-        screen = self.screen
-        if hasattr(screen, "update_status"):
-            model = self.config.model if self.config else "unknown"
-            screen.update_status(f"{agent} | {model} | 0 tokens")
+        # Update status bar on active screen (if running)
+        try:
+            screen = self.screen
+            if hasattr(screen, "update_status"):
+                model = self.config.model if self.config else "unknown"
+                screen.update_status(f"{agent} | {model} | 0 tokens")
+        except Exception:
+            pass
 
     def switch_model(self, model_id: str) -> None:
         """Switch the currently active model at runtime.
@@ -180,9 +183,12 @@ class PyHarnessApp(App):
         """
         if self.config:
             self.config.model = model_id
-        screen = self.screen
-        if hasattr(screen, "update_status"):
-            screen.update_status(f"{self.current_agent} | {model_id} | 0 tokens")
+        try:
+            screen = self.screen
+            if hasattr(screen, "update_status"):
+                screen.update_status(f"{self.current_agent} | {model_id} | 0 tokens")
+        except Exception:
+            pass
 
     def action_connect(self) -> None:
         """Open provider connection dialog."""
@@ -265,13 +271,16 @@ class PyHarnessApp(App):
                     yield Static("\n[#8b949e]Type /command in chat or Escape to close[/]")
 
             def action_select(self) -> None:
-                """Execute the currently selected command."""
+                """Execute the highlighted command."""
                 list_view = self.query_one("#command-list", ListView)
-                if list_view.highlighted_child is not None:
-                    commands = list(self.app.COMMANDS.keys())
-                    for i, child in enumerate(list_view.children):
-                        if child is list_view.highlighted_child:
-                            self.dismiss(commands[i])
+                highlighted = list_view.highlighted_child
+                if highlighted is not None:
+                    children = list(list_view.children)
+                    if highlighted in children:
+                        idx = children.index(highlighted)
+                        cmds = list(self.app.COMMANDS.keys())
+                        if 0 <= idx < len(cmds):
+                            self.dismiss(cmds[idx])
                             return
                 self.dismiss(None)
 
@@ -290,7 +299,10 @@ class PyHarnessApp(App):
         """
         if cmd is None:
             return
-        screen = self.screen
+        try:
+            screen = self.screen
+        except Exception:
+            return
         if hasattr(screen, "query_one"):
             try:
                 chat = screen.query_one("#chat-area")
