@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 900" style="background:#0d1117;font-family:'JetBrains Mono','Fira Code',sans-serif">
+
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#484f58"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1100" height="900" fill="#0d1117"/>
+
+  <text x="550" y="42" fill="#c9d1d9" font-size="22" font-weight="bold" text-anchor="middle">pyharness — System Architecture</text>
+
+  <!-- ====== TUI LAYER (Textual) ====== -->
+  <rect x="40" y="70" width="1020" height="170" rx="14" fill="#161b22" stroke="#388bfd" stroke-width="1"/>
+  <rect x="40" y="70" width="1020" height="30" rx="14" fill="#1f2937"/>
+  <rect x="40" y="86" width="1020" height="14" fill="#1f2937"/>
+  <text x="56" y="90" fill="#58a6ff" font-size="13" font-weight="bold">TUI Layer — Textual 2.x (Python, async)</text>
+
+  <!-- Widgets -->
+  <rect x="60" y="112" width="180" height="52" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="150" y="136" fill="#c9d1d9" font-size="11" text-anchor="middle">ChatScreen</text>
+  <text x="150" y="154" fill="#8b949e" font-size="9" text-anchor="middle">messages, input, scroll</text>
+
+  <rect x="260" y="112" width="180" height="52" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="350" y="136" fill="#c9d1d9" font-size="11" text-anchor="middle">SidePanel</text>
+  <text x="350" y="154" fill="#8b949e" font-size="9" text-anchor="middle">sessions, files, tools</text>
+
+  <rect x="460" y="112" width="180" height="52" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="550" y="136" fill="#c9d1d9" font-size="11" text-anchor="middle">CommandBar</text>
+  <text x="550" y="154" fill="#8b949e" font-size="9" text-anchor="middle">/slash, @refs, !bash</text>
+
+  <rect x="660" y="112" width="180" height="52" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="750" y="136" fill="#c9d1d9" font-size="11" text-anchor="middle">StatusBar</text>
+  <text x="750" y="154" fill="#8b949e" font-size="9" text-anchor="middle">agent, model, tokens</text>
+
+  <rect x="860" y="112" width="180" height="52" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="950" y="136" fill="#c9d1d9" font-size="11" text-anchor="middle">OverlayManager</text>
+  <text x="950" y="154" fill="#8b949e" font-size="9" text-anchor="middle">permissions, pickers</text>
+
+  <!-- Widget labels -->
+  <text x="150" y="190" fill="#484f58" font-size="8" text-anchor="middle">Screen</text>
+  <text x="350" y="190" fill="#484f58" font-size="8" text-anchor="middle">SidebarWidget</text>
+  <text x="550" y="190" fill="#484f58" font-size="8" text-anchor="middle">InputWidget</text>
+  <text x="750" y="190" fill="#484f58" font-size="8" text-anchor="middle">StatusWidget</text>
+  <text x="950" y="190" fill="#484f58" font-size="8" text-anchor="middle">ModalWidget</text>
+
+  <!-- ====== CORE ENGINE ====== -->
+  <rect x="40" y="270" width="1020" height="200" rx="14" fill="#161b22" stroke="#d2a8ff" stroke-width="1"/>
+  <rect x="40" y="270" width="1020" height="30" rx="14" fill="#1f2937"/>
+  <rect x="40" y="286" width="1020" height="14" fill="#1f2937"/>
+  <text x="56" y="290" fill="#d2a8ff" font-size="13" font-weight="bold">Core Engine</text>
+
+  <rect x="60" y="312" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="175" y="334" fill="#c9d1d9" font-size="11" text-anchor="middle">SessionManager</text>
+  <text x="175" y="352" fill="#8b949e" font-size="9" text-anchor="middle">SQLite persistence</text>
+  <text x="175" y="368" fill="#8b949e" font-size="9" text-anchor="middle">Git snapshots · undo/redo</text>
+
+  <rect x="310" y="312" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="425" y="334" fill="#c9d1d9" font-size="11" text-anchor="middle">AgentRuntime</text>
+  <text x="425" y="352" fill="#8b949e" font-size="9" text-anchor="middle">ReAct loop · streaming</text>
+  <text x="425" y="368" fill="#8b949e" font-size="9" text-anchor="middle">Context compaction</text>
+
+  <rect x="560" y="312" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="675" y="334" fill="#c9d1d9" font-size="11" text-anchor="middle">ToolRegistry</text>
+  <text x="675" y="352" fill="#8b949e" font-size="9" text-anchor="middle">Builtin + MCP + Custom</text>
+  <text x="675" y="368" fill="#8b949e" font-size="9" text-anchor="middle">Permission enforcement</text>
+
+  <rect x="810" y="312" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="925" y="334" fill="#c9d1d9" font-size="11" text-anchor="middle">ConfigLoader</text>
+  <text x="925" y="352" fill="#8b949e" font-size="9" text-anchor="middle">pydantic v2 · JSON5</text>
+  <text x="925" y="368" fill="#8b949e" font-size="9" text-anchor="middle">Merge precedence</text>
+
+  <rect x="60" y="392" width="460" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="290" y="414" fill="#c9d1d9" font-size="11" text-anchor="middle">ProviderBridge</text>
+  <text x="290" y="432" fill="#8b949e" font-size="9" text-anchor="middle">LangChain (18 pkgs) · OpenRouter (200+ models) · LiteLLM (opt)</text>
+  <text x="290" y="450" fill="#8b949e" font-size="9" text-anchor="middle">Unified provider:model-id · tool calling · vision · streaming</text>
+
+  <rect x="540" y="392" width="500" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="790" y="414" fill="#c9d1d9" font-size="11" text-anchor="middle">PluginManager</text>
+  <text x="790" y="432" fill="#8b949e" font-size="9" text-anchor="middle">Python entry points · local .pyharness/plugins/ · hook dispatch</text>
+  <text x="790" y="450" fill="#8b949e" font-size="9" text-anchor="middle">Events: tool.*, session.*, message.*, permission.*, shell.env</text>
+
+  <!-- ====== STORAGE & DISCOVERY ====== -->
+  <rect x="40" y="500" width="1020" height="140" rx="14" fill="#161b22" stroke="#ffa657" stroke-width="1"/>
+  <rect x="40" y="500" width="1020" height="30" rx="14" fill="#1f2937"/>
+  <rect x="40" y="516" width="1020" height="14" fill="#1f2937"/>
+  <text x="56" y="520" fill="#ffa657" font-size="13" font-weight="bold">Storage &amp; Discovery</text>
+
+  <rect x="60" y="540" width="240" height="88" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="180" y="562" fill="#c9d1d9" font-size="11" text-anchor="middle">Skills Loader</text>
+  <text x="180" y="580" fill="#8b949e" font-size="9" text-anchor="middle">SKILL.md discovery</text>
+  <text x="180" y="596" fill="#8b949e" font-size="9" text-anchor="middle">.pyharness/skills/</text>
+  <text x="180" y="612" fill="#8b949e" font-size="9" text-anchor="middle">~/.config/pyharness/skills/</text>
+  <text x="180" y="624" fill="#484f58" font-size="8" text-anchor="middle">Claude-compatible fallback</text>
+
+  <rect x="320" y="540" width="240" height="88" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="440" y="562" fill="#c9d1d9" font-size="11" text-anchor="middle">Commands Loader</text>
+  <text x="440" y="580" fill="#8b949e" font-size="9" text-anchor="middle">/command templates</text>
+  <text x="440" y="596" fill="#8b949e" font-size="9" text-anchor="middle">.pyharness/commands/</text>
+  <text x="440" y="612" fill="#8b949e" font-size="9" text-anchor="middle">JSON + Markdown formats</text>
+
+  <rect x="580" y="540" width="240" height="88" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="700" y="562" fill="#c9d1d9" font-size="11" text-anchor="middle">MCP Client</text>
+  <text x="700" y="580" fill="#8b949e" font-size="9" text-anchor="middle">mcp Python SDK</text>
+  <text x="700" y="596" fill="#8b949e" font-size="9" text-anchor="middle">Local: stdio subprocess</text>
+  <text x="700" y="612" fill="#8b949e" font-size="9" text-anchor="middle">Remote: HTTP+SSE+OAuth</text>
+
+  <rect x="840" y="540" width="200" height="88" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="940" y="562" fill="#c9d1d9" font-size="11" text-anchor="middle">Agent Loader</text>
+  <text x="940" y="580" fill="#8b949e" font-size="9" text-anchor="middle">~/.config/.../agents/</text>
+  <text x="940" y="596" fill="#8b949e" font-size="9" text-anchor="middle">.pyharness/agents/</text>
+  <text x="940" y="612" fill="#8b949e" font-size="9" text-anchor="middle">Markdown frontmatter</text>
+
+  <!-- ====== EXTERNAL ====== -->
+  <rect x="40" y="670" width="1020" height="120" rx="14" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+  <rect x="40" y="670" width="1020" height="30" rx="14" fill="#1f2937"/>
+  <rect x="40" y="686" width="1020" height="14" fill="#1f2937"/>
+  <text x="56" y="690" fill="#3fb950" font-size="13" font-weight="bold">External Integrations</text>
+
+  <rect x="60" y="710" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="175" y="732" fill="#c9d1d9" font-size="11" text-anchor="middle">LLM Providers</text>
+  <text x="175" y="750" fill="#8b949e" font-size="9" text-anchor="middle">Anthropic · OpenAI · Google</text>
+  <text x="175" y="766" fill="#8b949e" font-size="9" text-anchor="middle">Groq · Mistral · xAI · +100</text>
+
+  <rect x="310" y="710" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="425" y="732" fill="#c9d1d9" font-size="11" text-anchor="middle">MCP Servers</text>
+  <text x="425" y="750" fill="#8b949e" font-size="9" text-anchor="middle">Sentry · Context7 · Grep.app</text>
+  <text x="425" y="766" fill="#8b949e" font-size="9" text-anchor="middle">Custom &amp; community servers</text>
+
+  <rect x="560" y="710" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="675" y="732" fill="#c9d1d9" font-size="11" text-anchor="middle">Web Tools</text>
+  <text x="675" y="750" fill="#8b949e" font-size="9" text-anchor="middle">webfetch · websearch</text>
+  <text x="675" y="766" fill="#8b949e" font-size="9" text-anchor="middle">Exa · Brave · Google</text>
+
+  <rect x="810" y="710" width="230" height="68" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="925" y="732" fill="#c9d1d9" font-size="11" text-anchor="middle">LSP Servers</text>
+  <text x="925" y="750" fill="#8b949e" font-size="9" text-anchor="middle">python-lsp-server · pyright</text>
+  <text x="925" y="766" fill="#8b949e" font-size="9" text-anchor="middle">Definitions · references · hover</text>
+
+  <!-- ====== CONNECTING LINES ====== -->
+
+  <!-- TUI → Core -->
+  <line x1="150" y1="240" x2="150" y2="270" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="350" y1="240" x2="350" y2="270" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="550" y1="240" x2="550" y2="270" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="750" y1="240" x2="750" y2="270" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <!-- Core → Storage -->
+  <line x1="150" y1="470" x2="150" y2="500" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="425" y1="470" x2="425" y2="500" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="675" y1="470" x2="675" y2="500" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <!-- Storage → External -->
+  <line x1="175" y1="640" x2="175" y2="670" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="700" y1="640" x2="700" y2="670" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="940" y1="640" x2="940" y2="670" stroke="#484f58" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <!-- ====== KEY ====== -->
+  <rect x="40" y="820" width="1020" height="60" rx="10" fill="#161b22" stroke="#21262d" stroke-width="0.5"/>
+  <text x="60" y="846" fill="#8b949e" font-size="11">Tech: <tspan fill="#c9d1d9">Python 3.12+</tspan> · <tspan fill="#c9d1d9">Textual 2.x</tspan> · <tspan fill="#c9d1d9">LangGraph</tspan> · <tspan fill="#c9d1d9">LangChain</tspan> · <tspan fill="#c9d1d9">OpenRouter</tspan> · <tspan fill="#c9d1d9">pydantic</tspan> · <tspan fill="#c9d1d9">SQLite</tspan> · <tspan fill="#c9d1d9">GitPython</tspan> · <tspan fill="#c9d1d9">MemPalace</tspan> · <tspan fill="#c9d1d9">mcp</tspan> (Python SDK)</text>
+  <text x="60" y="868" fill="#8b949e" font-size="11">Config: <tspan fill="#c9d1d9">~/.config/pyharness/pyharness.json</tspan>  ·  <tspan fill="#c9d1d9">.pyharness/pyharness.json</tspan>  ·  <tspan fill="#c9d1d9">tui.json</tspan></text>
+
+</svg>

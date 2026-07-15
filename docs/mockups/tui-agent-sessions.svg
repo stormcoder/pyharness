@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 820" style="background:#0d1117;font-family:'JetBrains Mono','Fira Code',monospace">
+
+  <defs>
+    <linearGradient id="hg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#161b22"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1320" height="820" fill="#0d1117"/>
+
+  <!-- === TITLE === -->
+  <text x="660" y="50" fill="#c9d1d9" font-size="20" font-weight="bold" text-anchor="middle">Agent Architecture &amp; Session Hierarchy</text>
+  <text x="660" y="72" fill="#8b949e" font-size="12" text-anchor="middle">Primary agents manage the main conversation; subagents run in child sessions for parallel work.</text>
+
+  <!-- ====== AGENT HIERARCHY DIAGRAM ====== -->
+  <text x="80" y="120" fill="#58a6ff" font-size="14" font-weight="bold">Agent System</text>
+
+  <!-- Build agent -->
+  <rect x="80" y="140" width="280" height="200" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <rect x="80" y="140" width="280" height="36" rx="12" fill="#1f2937"/>
+  <rect x="80" y="164" width="280" height="12" fill="#1f2937"/>
+  <text x="96" y="164" fill="#7ee787" font-size="13" font-weight="bold">&#x2699; Build Agent</text>
+  <text x="96" y="164" fill="#7ee787" font-size="13" font-weight="bold" dx="110"/>
+  <text x="200" y="164" fill="#8b949e" font-size="10">primary</text>
+
+  <text x="96" y="196" fill="#c9d1d9" font-size="11">Tool access:</text>
+  <text x="96" y="214" fill="#3fb950" font-size="10">&#x2713; bash &#x2713; read &#x2713; write &#x2713; edit</text>
+  <text x="96" y="230" fill="#3fb950" font-size="10">&#x2713; grep &#x2713; glob &#x2713; task &#x2713; webfetch</text>
+  <text x="96" y="246" fill="#3fb950" font-size="10">&#x2713; websearch &#x2713; question &#x2713; skill</text>
+  <text x="96" y="270" fill="#d29922" font-size="9">Spawns subagents for parallel work</text>
+  <text x="96" y="286" fill="#8b949e" font-size="9">Default agent for implementation</text>
+
+  <!-- Plan agent -->
+  <rect x="80" y="360" width="280" height="140" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <rect x="80" y="360" width="280" height="36" rx="12" fill="#1f2937"/>
+  <rect x="80" y="384" width="280" height="12" fill="#1f2937"/>
+  <text x="96" y="384" fill="#d2a8ff" font-size="13" font-weight="bold">&#x1f4cb; Plan Agent</text>
+  <text x="210" y="384" fill="#8b949e" font-size="10">primary</text>
+
+  <text x="96" y="416" fill="#c9d1d9" font-size="11">Tool access:</text>
+  <text x="96" y="434" fill="#3fb950" font-size="10">&#x2713; read &#x2713; grep &#x2713; glob &#x2713; question</text>
+  <text x="96" y="450" fill="#f85149" font-size="10">&#x2717; bash &#x2717; write &#x2717; edit</text>
+  <text x="96" y="474" fill="#8b949e" font-size="9">Read-only analysis and planning</text>
+
+  <!-- Arrow from Build -->
+  <line x1="360" y1="240" x2="440" y2="240" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="372" y="230" fill="#484f58" font-size="8">spawns</text>
+
+  <!-- Subagents panel -->
+  <rect x="450" y="140" width="420" height="280" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+  <text x="470" y="172" fill="#ffa657" font-size="13" font-weight="bold">Subagents (via task tool)</text>
+
+  <!-- General -->
+  <rect x="470" y="190" width="190" height="100" rx="8" fill="#0d1117" stroke="#21262d" stroke-width="0.5"/>
+  <text x="486" y="212" fill="#ffa657" font-size="12" font-weight="bold">&#x1f310; General</text>
+  <text x="486" y="230" fill="#8b949e" font-size="9">Full tool access</text>
+  <text x="486" y="246" fill="#8b949e" font-size="9">Multi-step tasks</text>
+  <text x="486" y="262" fill="#8b949e" font-size="9">Parallel execution</text>
+  <text x="486" y="278" fill="#484f58" font-size="9">@general search this repo</text>
+
+  <!-- Explore -->
+  <rect x="670" y="190" width="190" height="100" rx="8" fill="#0d1117" stroke="#21262d" stroke-width="0.5"/>
+  <text x="686" y="212" fill="#58a6ff" font-size="12" font-weight="bold">&#x1f50d; Explore</text>
+  <text x="686" y="230" fill="#8b949e" font-size="9">Read-only</text>
+  <text x="686" y="246" fill="#8b949e" font-size="9">Codebase search</text>
+  <text x="686" y="262" fill="#8b949e" font-size="9">Pattern discovery</text>
+  <text x="686" y="278" fill="#484f58" font-size="9">@explore find auth handlers</text>
+
+  <!-- Code Reviewer (custom) -->
+  <rect x="470" y="300" width="190" height="100" rx="8" fill="#0d1117" stroke="#f78166" stroke-width="0.5" stroke-dasharray="4,2"/>
+  <text x="486" y="322" fill="#f78166" font-size="12" font-weight="bold">&#x1f512; Code Review</text>
+  <text x="486" y="340" fill="#8b949e" font-size="9">Custom subagent</text>
+  <text x="486" y="356" fill="#8b949e" font-size="9">Read-only</text>
+  <text x="486" y="372" fill="#8b949e" font-size="9">Security &amp; perf focus</text>
+  <text x="486" y="388" fill="#f78166" font-size="9">user-defined</text>
+
+  <!-- ====== SESSION HIERARCHY ====== -->
+  <text x="80" y="560" fill="#58a6ff" font-size="14" font-weight="bold">Session Hierarchy</text>
+
+  <rect x="80" y="580" width="1120" height="190" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Parent session -->
+  <rect x="110" y="610" width="300" height="48" rx="8" fill="#1f2937" stroke="#388bfd" stroke-width="1.5"/>
+  <text x="126" y="630" fill="#c9d1d9" font-size="12" font-weight="bold">&#x25b6; Parent Session</text>
+  <text x="126" y="648" fill="#8b949e" font-size="9">Build agent · 24 msgs · refactor-auth</text>
+
+  <!-- Arrow lines to children -->
+  <line x1="410" y1="634" x2="460" y2="634" stroke="#30363d" stroke-width="1"/>
+  <line x1="460" y1="634" x2="460" y2="616" stroke="#30363d" stroke-width="1"/>
+  <line x1="460" y1="634" x2="460" y2="652" stroke="#30363d" stroke-width="1"/>
+
+  <text x="420" y="626" fill="#484f58" font-size="8">task tool</text>
+
+  <!-- Child 1 -->
+  <rect x="470" y="594" width="320" height="40" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="486" y="612" fill="#ffa657" font-size="11">&#x21b3; Child: @general — search codebase</text>
+  <text x="486" y="628" fill="#484f58" font-size="9">completed · 4 msgs · 3 tool calls</text>
+
+  <!-- Child 2 -->
+  <rect x="470" y="642" width="320" height="40" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="486" y="660" fill="#58a6ff" font-size="11">&#x21b3; Child: @explore — find auth patterns</text>
+  <text x="486" y="676" fill="#484f58" font-size="9">completed · 6 msgs · 5 tool calls</text>
+
+  <!-- Child 3 (active) -->
+  <rect x="470" y="690" width="320" height="40" rx="8" fill="#1f2937" stroke="#d2a8ff" stroke-width="1"/>
+  <text x="486" y="708" fill="#c9d1d9" font-size="11">&#x25b6; Child: @general — update tests</text>
+  <text x="486" y="724" fill="#d2a8ff" font-size="9">active · 2 msgs · running...</text>
+
+  <!-- Nav keys -->
+  <rect x="870" y="610" width="310" height="130" rx="8" fill="#0d1117" stroke="#21262d" stroke-width="0.5"/>
+  <text x="886" y="634" fill="#c9d1d9" font-size="12" font-weight="bold">Navigation</text>
+  <text x="886" y="656" fill="#8b949e" font-size="10"><tspan fill="#58a6ff">Up</tspan> — Return to parent session</text>
+  <text x="886" y="674" fill="#8b949e" font-size="10"><tspan fill="#58a6ff">Right</tspan> — Next child session</text>
+  <text x="886" y="692" fill="#8b949e" font-size="10"><tspan fill="#58a6ff">Left</tspan> — Previous child session</text>
+  <text x="886" y="710" fill="#8b949e" font-size="10"><tspan fill="#58a6ff">Down</tspan> — First child session</text>
+  <text x="886" y="728" fill="#8b949e" font-size="10"><tspan fill="#58a6ff">Tab</tspan> — Cycle primary agents</text>
+
+</svg>

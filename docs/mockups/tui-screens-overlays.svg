@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 820" style="background:#0d1117;font-family:'JetBrains Mono','Fira Code',monospace">
+
+  <defs>
+    <linearGradient id="hg2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#161b22"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1320" height="820" fill="#0d1117"/>
+
+  <!-- === TITLE === -->
+  <text x="660" y="50" fill="#c9d1d9" font-size="20" font-weight="bold" text-anchor="middle">TUI Screens — Sessions, Models &amp; Themes</text>
+  <text x="660" y="72" fill="#8b949e" font-size="12" text-anchor="middle">Overlay dialogs invoked via keybinds and slash commands.</text>
+
+  <!-- ====== SESSION LIST SCREEN ====== -->
+  <text x="80" y="120" fill="#58a6ff" font-size="14" font-weight="bold">/sessions — Session Browser</text>
+
+  <rect x="80" y="140" width="560" height="480" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  
+  <!-- Search bar -->
+  <rect x="100" y="156" width="520" height="32" rx="6" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="116" y="177" fill="#484f58" font-size="11">&#x1f50d; Search sessions...</text>
+
+  <!-- Active section -->
+  <text x="100" y="216" fill="#8b949e" font-size="10" font-weight="bold">ACTIVE SESSIONS</text>
+
+  <!-- Session row 1 (selected) -->
+  <rect x="100" y="226" width="520" height="56" rx="8" fill="#1f2937" stroke="#388bfd" stroke-width="1"/>
+  <text x="116" y="248" fill="#c9d1d9" font-size="13">&#x25b6; refactor-auth-module</text>
+  <text x="290" y="248" fill="#58a6ff" font-size="10">Build</text>
+  <text x="340" y="248" fill="#8b949e" font-size="10">24 messages</text>
+  <text x="440" y="248" fill="#8b949e" font-size="10">2 min ago</text>
+  <text x="116" y="270" fill="#8b949e" font-size="9">/home/mike/projects/pyharness  ·  anthropic/claude-sonnet-4-5</text>
+
+  <!-- Session row 2 -->
+  <rect x="100" y="288" width="520" height="56" rx="8" fill="transparent" stroke="transparent" stroke-width="1"/>
+  <text x="116" y="310" fill="#8b949e" font-size="13">&#x25cf; fix-login-bug</text>
+  <text x="280" y="310" fill="#58a6ff" font-size="10">Build</text>
+  <text x="330" y="310" fill="#8b949e" font-size="10">8 messages</text>
+  <text x="430" y="310" fill="#8b949e" font-size="10">1 hr ago</text>
+  <text x="116" y="332" fill="#484f58" font-size="9">/home/mike/projects/webapp  ·  openai/gpt-5</text>
+
+  <!-- Session row 3 -->
+  <rect x="100" y="350" width="520" height="56" rx="8" fill="transparent" stroke="transparent" stroke-width="1"/>
+  <text x="116" y="372" fill="#8b949e" font-size="13">&#x25cf; plan-database-schema</text>
+  <text x="340" y="372" fill="#d2a8ff" font-size="10">Plan</text>
+  <text x="390" y="372" fill="#8b949e" font-size="10">42 messages</text>
+  <text x="490" y="372" fill="#8b949e" font-size="10">3 hr ago</text>
+  <text x="116" y="394" fill="#484f58" font-size="9">/home/mike/projects/api  ·  anthropic/claude-haiku-4-5</text>
+
+  <!-- Archived section -->
+  <line x1="100" y1="430" x2="610" y2="430" stroke="#21262d" stroke-width="1"/>
+  <text x="100" y="454" fill="#484f58" font-size="10" font-weight="bold">ARCHIVED</text>
+
+  <rect x="100" y="464" width="520" height="40" rx="6" fill="transparent"/>
+  <text x="116" y="482" fill="#484f58" font-size="12">&#x25cf; add-ci-pipeline (5 days ago)</text>
+  <text x="116" y="498" fill="#484f58" font-size="9">Build · 18 messages · /home/mike/projects/pyharness</text>
+
+  <rect x="100" y="508" width="520" height="40" rx="6" fill="transparent"/>
+  <text x="116" y="526" fill="#484f58" font-size="12">&#x25cf; initial-setup (2 weeks ago)</text>
+  <text x="116" y="542" fill="#484f58" font-size="9">Build · 56 messages · /home/mike/projects/pyharness</text>
+
+  <!-- Key hints -->
+  <text x="100" y="598" fill="#484f58" font-size="9">Enter resume · d delete · /search filter · Esc close</text>
+
+  <!-- ====== MODELS & THEMES ====== -->
+  <text x="680" y="120" fill="#58a6ff" font-size="14" font-weight="bold">/models — Model Selector</text>
+
+  <rect x="680" y="140" width="560" height="220" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Model row 1 (selected) -->
+  <rect x="700" y="160" width="520" height="48" rx="8" fill="#1f2937" stroke="#7ee787" stroke-width="1"/>
+  <text x="716" y="181" fill="#c9d1d9" font-size="13">Claude Sonnet 4.5</text>
+  <text x="716" y="199" fill="#8b949e" font-size="9">anthropic/claude-sonnet-4-5 · 200k context · $3/$15 per MTok</text>
+  <text x="1080" y="181" fill="#7ee787" font-size="10">&#x2713; Active</text>
+
+  <!-- Model row 2 -->
+  <rect x="700" y="214" width="520" height="48" rx="8" fill="transparent"/>
+  <text x="716" y="235" fill="#c9d1d9" font-size="13">Claude Opus 4.5</text>
+  <text x="716" y="253" fill="#8b949e" font-size="9">anthropic/claude-opus-4-5 · 200k context · $15/$75 per MTok</text>
+
+  <!-- Model row 3 -->
+  <rect x="700" y="268" width="520" height="48" rx="8" fill="transparent"/>
+  <text x="716" y="289" fill="#c9d1d9" font-size="13">GPT-5</text>
+  <text x="716" y="307" fill="#8b949e" font-size="9">openai/gpt-5 · 128k context · $1.25/$10 per MTok</text>
+
+  <!-- ====== THEMES ====== -->
+  <text x="680" y="400" fill="#58a6ff" font-size="14" font-weight="bold">/themes — Theme Picker</text>
+
+  <rect x="680" y="420" width="560" height="200" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Theme swatches row -->
+  <!-- Tokyo Night (selected) -->
+  <rect x="700" y="444" width="80" height="56" rx="8" fill="#1a1b2e" stroke="#388bfd" stroke-width="2"/>
+  <rect x="700" y="444" width="80" height="16" rx="8" fill="#242442"/>
+  <rect x="700" y="460" width="80" height="40" fill="#1a1b2e"/>
+
+  <!-- Dark -->
+  <rect x="790" y="444" width="80" height="56" rx="8" fill="#1e1e1e" stroke="#30363d" stroke-width="0.5"/>
+  <rect x="790" y="444" width="80" height="16" rx="8" fill="#2d2d2d"/>
+  <rect x="790" y="460" width="80" height="40" fill="#1e1e1e"/>
+
+  <!-- Light -->
+  <rect x="880" y="444" width="80" height="56" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="0.5"/>
+  <rect x="880" y="444" width="80" height="16" rx="8" fill="#f6f8fa"/>
+  <rect x="880" y="460" width="80" height="40" fill="#ffffff"/>
+
+  <!-- Dracula -->
+  <rect x="970" y="444" width="80" height="56" rx="8" fill="#282a36" stroke="#30363d" stroke-width="0.5"/>
+  <rect x="970" y="444" width="80" height="16" rx="8" fill="#44475a"/>
+  <rect x="970" y="460" width="80" height="40" fill="#282a36"/>
+
+  <!-- Nord -->
+  <rect x="1060" y="444" width="80" height="56" rx="8" fill="#2e3440" stroke="#30363d" stroke-width="0.5"/>
+  <rect x="1060" y="444" width="80" height="16" rx="8" fill="#3b4252"/>
+  <rect x="1060" y="460" width="80" height="40" fill="#2e3440"/>
+
+  <!-- Theme labels -->
+  <text x="740" y="518" fill="#388bfd" font-size="9" text-anchor="middle">Tokyo Night</text>
+  <text x="830" y="518" fill="#8b949e" font-size="9" text-anchor="middle">Dark</text>
+  <text x="920" y="518" fill="#8b949e" font-size="9" text-anchor="middle">Light</text>
+  <text x="1010" y="518" fill="#8b949e" font-size="9" text-anchor="middle">Dracula</text>
+  <text x="1100" y="518" fill="#8b949e" font-size="9" text-anchor="middle">Nord</text>
+
+  <text x="700" y="596" fill="#484f58" font-size="9">← → navigate · Enter select · Esc close</text>
+
+  <!-- ====== COMMAND PALETTE ====== -->
+  <text x="80" y="660" fill="#58a6ff" font-size="14" font-weight="bold">Ctrl+p — Command Palette</text>
+
+  <rect x="80" y="682" width="560" height="100" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Search bar -->
+  <rect x="100" y="698" width="520" height="32" rx="6" fill="#0d1117" stroke="#30363d" stroke-width="0.5"/>
+  <text x="116" y="719" fill="#484f58" font-size="11">Search commands...</text>
+
+  <rect x="100" y="738" width="520" height="28" rx="6" fill="#1f2937"/>
+  <text x="116" y="756" fill="#c9d1d9" font-size="11">/init — Create AGENTS.md file for this project</text>
+  <text x="580" y="756" fill="#484f58" font-size="10">Ctrl+x i</text>
+
+  <!-- Footer hint -->
+  <text x="100" y="800" fill="#484f58" font-size="9">↑↓ navigate · Enter select · Esc close</text>
+
+</svg>
