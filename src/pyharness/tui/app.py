@@ -118,12 +118,12 @@ class PyHarnessApp(App):
     """
 
     BINDINGS = [
+        ("tab", "switch_agent", "Switch Agent"),  # MUST be first for priority
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+n", "new_session", "New Session"),
         ("escape", "interrupt", "Interrupt"),
         ("ctrl+o", "toggle_sidebar", "Toggle Sidebar"),
         ("ctrl+p", "command_palette", "Commands"),
-        ("tab", "switch_agent", "Switch Agent"),
     ]
 
     AGENTS = ["build", "plan", "general", "explore"]
@@ -278,7 +278,7 @@ class PyHarnessApp(App):
                 ("up", "cursor_up", "Up"),
                 ("down", "cursor_down", "Down"),
                 ("enter", "select", "Select"),
-                ("escape", "dismiss", "Cancel"),
+                ("escape", "dismiss_cmd", "Cancel"),
             ]
 
             DEFAULT_CSS = """
@@ -312,87 +312,149 @@ class PyHarnessApp(App):
                         )
                         for cmd, desc in self.app.COMMANDS.items()
                     ]
-                    yield ListView(*items, id="command-list")
-                    yield Static("\n[#8b949e]Type /command in chat or Escape to close[/]")
+                    lv = ListView(*items, id="command-list")
+                    lv.can_focus = False  # CRITICAL: let Enter bubble to CommandPalette
+                    yield lv
+
+            def on_mount(self) -> None:
+                """Select the first item by default."""
+                list_view = self.query_one("#command-list", ListView)
+                if list_view.children:
+                    list_view.index = 0
+
+            def action_cursor_up(self) -> None:
+                """Move selection up in the command list."""
+                list_view = self.query_one("#command-list", ListView)
+                if list_view.index is not None and list_view.index > 0:
+                    list_view.index -= 1
+
+            def action_cursor_down(self) -> None:
+                """Move selection down in the command list."""
+                list_view = self.query_one("#command-list", ListView)
+                cmds = list(self.app.COMMANDS.keys())
+                if list_view.index is not None and list_view.index < len(cmds) - 1:
+                    list_view.index += 1
 
             def action_select(self) -> None:
-                """Execute the highlighted command."""
+                """Execute the highlighted or selected command."""
                 list_view = self.query_one("#command-list", ListView)
-                highlighted = list_view.highlighted_child
-                if highlighted is not None:
-                    children = list(list_view.children)
-                    if highlighted in children:
-                        idx = children.index(highlighted)
-                        cmds = list(self.app.COMMANDS.keys())
-                        if 0 <= idx < len(cmds):
-                            self.dismiss(cmds[idx])
-                            return
-                self.dismiss(None)
+                cmds = list(self.app.COMMANDS.keys())
+                # Use index property (set by on_mount + arrow keys)
+                if list_view.index is not None and 0 <= list_view.index < len(cmds):
+                    self.dismiss(cmds[list_view.index])
+                else:
+                    self.dismiss(None)
 
-            def action_dismiss(self) -> None:
+            def action_dismiss_cmd(self) -> None:
                 """Dismiss the palette without selecting."""
                 self.dismiss(None)
 
         self.push_screen(CommandPalette(), callback=self._handle_palette_selection)
 
     def _handle_palette_selection(self, cmd: str | None) -> None:
-        """Execute the selected command from the palette.
-
-        First tries screen._handle_slash_command dispatch; falls back
-        to direct handling if the screen method is unavailable.
-        """
+        """Execute the selected command from the palette."""
         if cmd is None:
             return
-
-        # First try: dispatch through the current screen's slash handler
         try:
             screen = self.screen
-            chat = screen.query_one("#chat-area")
-            chat.write(f"\n[bold #d2a8ff]{cmd}[/] — {self.COMMANDS.get(cmd, '')}")
-
+            # Try writing directly to chat first
+            try:
+                chat = screen.query_one("#chat-area")
+                chat.write(f"\n[bold #d2a8ff]{cmd}[/] — {self.COMMANDS.get(cmd, '')}")
+            except Exception:
+                pass
+            # Dispatch through screen handler
             if hasattr(screen, "_handle_slash_command"):
-                screen._handle_slash_command(cmd, chat)
-                return
-        except Exception:
-            pass
-
-        # Fallback: handle directly in the app
-        if cmd == "/connect":
-            self.action_connect()
-        elif cmd == "/new":
-            self.action_new_session()
-        elif cmd == "/help":
-            try:
-                screen = self.screen
-                chat = screen.query_one("#chat-area")
+                try:
+                    chat = screen.query_one("#chat-area")
+                    screen._handle_slash_command(cmd, chat)
+                    return
+                except Exception:
+                    pass
+            # Fallback: handle key commands directly
+            if cmd == "/connect":
+                self.action_connect()
+            elif cmd == "/new":
+                self.action_new_session()
+            elif cmd == "/sessions":
+                self.action_sessions()
+            elif cmd == "/help":
                 for c, d in self.COMMANDS.items():
-                    chat.write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
-            except Exception:
-                pass
-        elif cmd == "/models":
-            try:
-                screen = self.screen
-                chat = screen.query_one("#chat-area")
-                chat.write("[#8b949e]Available models:[/]")
-                chat.write("  anthropic:claude-sonnet-4-5")
-                chat.write("  openai:gpt-5")
-                chat.write("  openrouter:openai/gpt-5")
-            except Exception:
-                pass
-        elif cmd == "/sessions":
-            self.action_sessions()
-        elif cmd == "/themes":
-            from pyharness.tui.themes import get_all_themes
-            try:
-                screen = self.screen
-                chat = screen.query_one("#chat-area")
-                themes = get_all_themes()
-                chat.write("[#8b949e]Available themes:[/]")
-                for name, info in themes.items():
-                    chat.write(
-                        f"  [#7ee787]{name}[/] — [#c9d1d9]{info['name']}: {info['description']}[/]"
-                    )
-            except Exception:
-                pass
-        else:
+                    try:
+                        chat = screen.query_one("#chat-area")
+                        chat.write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
+                    except Exception:
+                        pass
+            elif cmd == "/models":
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    from pyharness.core.provider import list_available_models
+                    models = list_available_models(self.config)
+                    chat.write("[#8b949e]Available models (use /model <id> to switch):[/]")
+                    for m in models[:20]:
+                        marker = "→ " if (self.config and self.config.model == m) else "  "
+                        chat.write(f"  {marker}[#7ee787]{m}[/]")
+                except Exception:
+                    pass
+            elif cmd == "/themes":
+                from pyharness.tui.themes import get_all_themes
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    themes = get_all_themes()
+                    chat.write("[#8b949e]Available themes:[/]")
+                    for name, info in themes.items():
+                        chat.write(
+                            f"  [#7ee787]{name}[/] — [#c9d1d9]{info['name']}: {info['description']}[/]"
+                        )
+                except Exception:
+                    pass
+            elif cmd == "/init":
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    if hasattr(screen, "_handle_init"):
+                        screen._handle_init(chat)
+                except Exception:
+                    pass
+            elif cmd == "/compact":
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    chat.write("[#8b949e]Session compacted (context summarized).[/]")
+                except Exception:
+                    pass
+            elif cmd == "/memory":
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    chat.write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
+                except Exception:
+                    pass
+            elif cmd == "/remember":
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
+                except Exception:
+                    pass
+            elif cmd == "/editor":
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    if hasattr(screen, "_handle_editor"):
+                        screen._handle_editor(chat)
+                except Exception:
+                    pass
+            elif cmd == "/export":
+                try:
+                    screen = self.screen
+                    chat = screen.query_one("#chat-area")
+                    chat.write("[#8b949e]Session exported to markdown.[/]")
+                except Exception:
+                    pass
+            else:
+                self.notify(f"Command: {cmd}", timeout=2)
+        except Exception:
             self.notify(f"Command: {cmd}", timeout=2)

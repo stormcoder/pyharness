@@ -133,6 +133,36 @@ def list_available_providers() -> list[str]:
     return sorted(PROVIDER_REGISTRY.keys())
 
 
+def list_available_models(config: PyHarnessConfig | None = None) -> list[str]:
+    """List available models from configured providers.
+
+    Args:
+        config: Optional config. If provided with ``config.provider`` keys,
+            only models from configured providers are returned.
+
+    Returns:
+        Sorted list of ``provider:model-id`` strings.
+    """
+    models = [
+        "anthropic:claude-sonnet-4-5",
+        "anthropic:claude-haiku-4-5",
+        "anthropic:claude-opus-4-5",
+        "openai:gpt-5",
+        "openai:gpt-4o-mini",
+        "openrouter:openai/gpt-5",
+        "openrouter:anthropic/claude-sonnet-4-5",
+        "openrouter:google/gemini-3-pro",
+        "openrouter:meta/llama-4-maverick",
+        "ollama:llama3",
+        "ollama:gemma3",
+        "google-genai:gemini-2.5-pro",
+    ]
+    if config is not None and config.provider:
+        configured = list(config.provider.keys())
+        models = [m for m in models if any(m.startswith(p) for p in configured)]
+    return models
+
+
 def get_small_model(config: PyHarnessConfig) -> BaseChatModel:
     """Resolve the configured ``small_model`` for lightweight / planning tasks.
 

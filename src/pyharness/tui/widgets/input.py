@@ -2,8 +2,10 @@
 
 Phase 2: ``@`` file reference fuzzy search and ``!`` bash expansion
 autocomplete.  ``/`` slash command completion with dropdown suggestions.
-"""
 
+Uses ``watch_value`` (Textual reactive) for @ and / autocomplete, which
+fires reliably after every value change — no ``_on_key`` timing issues.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,9 +21,6 @@ class PromptInput(Input):
     - ``@`` file references — fuzzy search project files + agent names
     - ``!`` bash command injection — execute inline shell commands
     - ``/`` slash commands — built-in command dispatch with suggestions
-
-    Phase 2: ``@`` triggers an autocomplete overlay with agent + file
-    matches.  ``/`` triggers slash command suggestions.
     """
 
     # Agent names for @ autocomplete (including subagents)
@@ -34,46 +33,28 @@ class PromptInput(Input):
         "/connect", "/connect ", "/model ", "/variants", "/mine",
     ]
 
-    # Class-level attributes for external autocomplete detection
-    _agent_names: list[str] = AGENT_NAMES
     _autocomplete_sources: list[str] = []
 
     def __init__(self, placeholder: str = "") -> None:
+        self._autocomplete_active = False  # type: ignore[assignment]
         super().__init__(placeholder=placeholder)
-        self._autocomplete_active = False
 
     def on_mount(self) -> None:
         """Request focus when mounted so cursor starts in input field."""
-        self.can_focus = True  # We want the input field to be focusable
+        self.can_focus = True
         self.focus()
 
+    # -- Key handler: only for non-character keys (Tab, Enter, Escape) --------
+
     async def _on_key(self, event: events.Key) -> None:
-        """Handle ``@`` and ``/`` keys to trigger autocomplete overlays.
+        """Handle Tab, Enter, and Escape.  @ and / are handled by watch_value."""
+        # CRITICAL: Intercept Tab BEFORE Textual Input consumes it for focus nav
+        if event.key == "tab":
+            if hasattr(self.app, "action_switch_agent"):
+                self.app.action_switch_agent()
+            return
 
-        When ``@`` is typed, shows a dropdown of agent names and matching
-        project files. When ``/`` is typed, shows slash command suggestions.
-
-        Enter key selects the first autocomplete match when active.
-        """
-        if event.key == "@":
-            self._autocomplete_active = True
-            current = self.value
-            at_prefix = current.rsplit("@", 1)[-1] if "@" in current else ""
-            sources = self.get_at_completions(at_prefix)
-            self._autocomplete_sources = sources
-            # Show @ reference dropdown (Suggest-style overlay with agent+file list)
-            self._show_at_dropdown(at_prefix)
-        elif event.key == "/":
-            self._autocomplete_active = True
-            current = self.value
-            if current.startswith("/"):
-                matches = [cmd for cmd in self.SLASH_COMMANDS if cmd.startswith(current)]
-                if matches:
-                    self._autocomplete_sources = matches
-                    # Show slash command dropdown (ListView-style suggestion list)
-                    self._show_slash_dropdown()
-        elif self._autocomplete_active and event.key == "enter":
-            # Select first match on Enter
+        if event.key == "enter" and self._autocomplete_active:
             if self._autocomplete_sources:
                 current = self.value
                 if current and "@" in current:
@@ -81,98 +62,121 @@ class PromptInput(Input):
                 elif current and current.startswith("/"):
                     self.value = self._autocomplete_sources[0]
                 self._autocomplete_active = False
-                self.tooltip = None
                 self._autocomplete_sources = []
                 return
-        elif self._autocomplete_active and event.key == "escape":
+
+        if event.key == "escape" and self._autocomplete_active:
             self._autocomplete_active = False
-            self.tooltip = None
             self._autocomplete_sources = []
-        elif self._autocomplete_active and event.key in (".", "_", "space"):
-            # Re-filter on each keystroke
-            current = self.value
-            if "@" in current:
-                at_prefix = current.rsplit("@", 1)[-1]
-                sources = self.get_at_completions(at_prefix)
-                self._autocomplete_sources = sources
-                self._show_at_dropdown(at_prefix)
+
         await super()._on_key(event)
 
+    # -- Reactive watcher: fires AFTER value changes ---------------------------
+
+    def watch_value(self, value: str) -> None:
+        """Show @ or / autocomplete whenever the value changes.
+
+        Textual calls this reactive watcher reliably after every value
+        change — no timing issues with ``_on_key``."""
+        if not value:
+            self._autocomplete_active = False
+            self._autocomplete_sources = []
+            return
+
+        # --- @ references: agents + files ---
+        if "@" in value and not value.startswith("/"):
+            self._autocomplete_active = True
+            at_idx = value.rfind("@")
+            prefix = value[at_idx + 1:]
+            sources = self.get_at_completions(prefix)
+            self._autocomplete_sources = sources
+            self._show_at_dropdown(prefix)
+            return
+
+        # --- / slash commands ---
+        if value.startswith("/"):
+            self._autocomplete_active = True
+            matches = [cmd for cmd in self.SLASH_COMMANDS if cmd.startswith(value)]
+            self._autocomplete_sources = matches
+            if matches:
+                self._show_slash_dropdown(value)
+            return
+
+        # --- Normal text: deactivate ---
+        self._autocomplete_active = False
+        self._autocomplete_sources = []
+
+    # -- Display helpers -------------------------------------------------------
+
     def _show_at_dropdown(self, prefix: str = "") -> None:
-        """Show interactive @ autocomplete dropdown — agents + files, filtered."""
+        """Write @ autocomplete results to the chat RichLog."""
         matches = self.get_at_completions(prefix)
-        if matches:
-            lines = ["[bold #58a6ff]@ References[/] (type to filter, ↑↓ navigate, Enter select)"]
-            for i, m in enumerate(matches[:10]):
-                prefix_mark = "→ " if i == 0 else "  "
-                lines.append(f"{prefix_mark}[#c9d1d9]{m}[/]")
-            if len(matches) > 10:
-                lines.append(f"  [#8b949e]... and {len(matches) - 10} more[/]")
-            self.tooltip = "\n".join(lines)
-
-    def _show_slash_dropdown(self) -> None:
-        """Show interactive slash command dropdown filtered by current input."""
-        current = self.value
-        matches = [cmd for cmd in self.SLASH_COMMANDS if cmd.startswith(current)]
-        if matches:
-            lines = ["[bold #58a6ff]Commands[/] (type to filter, ↑↓ navigate, Enter select)"]
-            for i, m in enumerate(matches[:8]):
-                prefix_mark = "→ " if i == 0 else "  "
-                lines.append(f"{prefix_mark}[#d2a8ff]{m}[/]")
-            if len(matches) > 8:
-                lines.append(f"  [#8b949e]... and {len(matches) - 8} more[/]")
-            self.tooltip = "\n".join(lines)
-
-    def get_at_completions(self, prefix: str = "") -> list[str]:
-        """Get completions for @ references — agents and files combined.
-
-        Args:
-            prefix: Text already typed after the ``@``.
-
-        Returns:
-            Combined list of matching agent names and file paths.
-        """
-        results: list[str] = []
-        # Agent names (exact prefix match)
-        for name in self._agent_names:
-            if name.startswith(prefix.lower()) or not prefix:
-                results.append(name)
-        # File matches (fuzzy search in project)
+        if not matches:
+            return
         try:
-            from pathlib import Path
-
-            cwd = Path.cwd()
-            if prefix:
-                for path in cwd.rglob(f"{prefix}*"):
-                    if path.is_file() and ".git/" not in str(path) and ".venv/" not in str(path):
-                        rel = str(path.relative_to(cwd))
-                        if len(rel) < 60:
-                            results.append(rel)
-            results = results[:20]
+            from textual.widgets import RichLog
+            chat = self.app.query_one("#chat-area", RichLog)
+            chat.write(f"\n[dim #8b949e]@ References ({len(matches)} matches)[/]")
+            for m in matches[:10]:
+                agent_tag = " [🤖]" if m in self.AGENT_NAMES else " [📄]"
+                chat.write(f"  [#7ee787]{m}{agent_tag}[/]")
+            if len(matches) > 10:
+                chat.write(f"  [dim]... {len(matches) - 10} more, type to filter[/]")
         except Exception:
             pass
-        return results
+
+    def _show_slash_dropdown(self, current: str = "") -> None:
+        """Write slash command suggestions to the chat RichLog."""
+        matches = [cmd for cmd in self.SLASH_COMMANDS if cmd.startswith(current)]
+        if not matches:
+            return
+        try:
+            from textual.widgets import RichLog
+            chat = self.app.query_one("#chat-area", RichLog)
+            chat.write("\n[dim #8b949e]Commands (type to filter, Enter to select)[/]")
+            for m in matches[:8]:
+                chat.write(f"  [#d2a8ff]{m}[/]")
+            if len(matches) > 8:
+                chat.write(f"  [dim]... {len(matches) - 8} more[/]")
+        except Exception:
+            pass
+
+    # -- Completions -----------------------------------------------------------
+
+    def get_at_completions(self, prefix: str = "") -> list[str]:
+        """Get completions for @ references — agents and files combined."""
+        results: list[str] = []
+        # Agent names first
+        for name in self.AGENT_NAMES:
+            if not prefix or name.startswith(prefix.lower()):
+                results.append(name)
+        # Files via rglob
+        try:
+            cwd = Path.cwd()
+            for path in cwd.rglob(f"{prefix}*"):
+                if (
+                    path.is_file()
+                    and ".git/" not in str(path)
+                    and ".venv/" not in str(path)
+                    and "__pycache__" not in str(path)
+                ):
+                    rel = str(path.relative_to(cwd))
+                    if len(rel) < 60:
+                        results.append(rel)
+                    if len(results) >= 20:
+                        break
+        except Exception:
+            pass
+        return results[:20]
 
     def get_at_file_refs(self) -> list[str]:
-        """Extract ``@path`` references from the current input value.
-
-        Returns:
-            List of file paths referenced after ``@`` markers.
-        """
+        """Extract ``@path`` references from the current input value."""
         import re
-
         value: str = getattr(self, "value", "")
         return re.findall(r"@([\w./-]+)", value)
 
     def resolve_at_files(self, project_root: Path | None = None) -> list[Path]:
-        """Resolve ``@path`` references to actual files in the project.
-
-        Args:
-            project_root: Project root directory (defaults to ``Path.cwd()``).
-
-        Returns:
-            List of resolved existing file paths.
-        """
+        """Resolve ``@path`` references to actual files in the project."""
         root = project_root or Path.cwd()
         refs = self.get_at_file_refs()
         resolved: list[Path] = []
@@ -183,18 +187,9 @@ class PromptInput(Input):
         return resolved
 
     def fuzzy_search_files(self, partial: str, project_root: Path | None = None) -> list[str]:
-        """Fuzzy search project files matching a partial path.
-
-        Args:
-            partial: Partial file name or path to search for.
-            project_root: Project root directory (defaults to ``Path.cwd()``).
-
-        Returns:
-            List of relative file paths matching the search term.
-        """
+        """Fuzzy search project files matching a partial path."""
         root = project_root or Path.cwd()
         results: list[str] = []
-
         for file_path in root.rglob(f"*{partial}*"):
             if file_path.is_file():
                 if any(
@@ -204,5 +199,4 @@ class PromptInput(Input):
                 ):
                     continue
                 results.append(str(file_path.relative_to(root)))
-
         return sorted(results)[:20]

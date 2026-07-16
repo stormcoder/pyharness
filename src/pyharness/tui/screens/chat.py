@@ -157,11 +157,12 @@ class ChatScreen(Screen):
                     chat.write("[#8b949e]Starting new session...[/]")
                     self.app.action_new_session()
                 elif cmd_name == "/models":
-                    chat.write("[#8b949e]Available models:[/]")
-                    chat.write("  anthropic:claude-sonnet-4-5")
-                    chat.write("  anthropic:claude-haiku-4-5")
-                    chat.write("  openai:gpt-5")
-                    chat.write("  openrouter:openai/gpt-5")
+                    from pyharness.core.provider import list_available_models
+                    models = list_available_models()
+                    chat.write("[#8b949e]Available models (use /model <id> to switch):[/]")
+                    for m in models[:20]:
+                        marker = "→ " if (hasattr(self.app, 'config') and self.app.config and self.app.config.model == m) else "  "
+                        chat.write(f"  {marker}[#7ee787]{m}[/]")
                 elif cmd_name == "/sessions":
                     chat.write("[#7ee787]Opening session browser...[/]")
                     self.app.action_sessions()
@@ -328,15 +329,12 @@ class ChatScreen(Screen):
                 self._show_connect_dialog(chat)
 
         elif cmd_name == "/models":
-            from pyharness.core.provider import list_available_providers
+            from pyharness.core.provider import list_available_models
+            models = list_available_models()
             chat.write("[#8b949e]Available models (use /model <id> to switch):[/]")
-            chat.write("  [#7ee787]anthropic:claude-sonnet-4-5[/]")
-            chat.write("  [#7ee787]anthropic:claude-haiku-4-5[/]")
-            chat.write("  [#7ee787]openai:gpt-5[/]")
-            chat.write("  [#7ee787]openai:gpt-4o-mini[/]")
-            chat.write("  [#7ee787]openrouter:openai/gpt-5[/]")
-            chat.write("  [#7ee787]openrouter:anthropic/claude-sonnet-4-5[/]")
-            chat.write(f"  [#8b949e]... and {len(list_available_providers())} providers available[/]")
+            for m in models[:20]:
+                marker = "→ " if (hasattr(self.app, 'config') and self.app.config and self.app.config.model == m) else "  "
+                chat.write(f"  {marker}[#7ee787]{m}[/]")
 
         elif cmd_name == "/model":
             chat.write("[#8b949e]Usage: /model provider:model-id[/]")

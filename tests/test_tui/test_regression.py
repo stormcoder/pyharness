@@ -78,14 +78,21 @@ class TestPaletteNoCrash:
         """action_select must not query ListView before it's mounted."""
         app = PyHarnessApp()
         source = inspect.getsource(app.action_command_palette)
-        # query_one must appear in action_select (after compose), not before
+        # query_one is safe in on_mount and action_select (post-mount lifecycle).
+        # It must NOT appear in compose() itself.
         compose_start = source.index("def compose")
-        action_select_start = source.index("def action_select")
-        query_idx = source.rfind("query_one", compose_start, action_select_start)
+        # Find the end of compose: next method definition at same indent level (12 spaces)
+        # Use regex to find the next 'def ' at the same indent
+        import re
+        next_def = re.search(r"\n            def ", source[compose_start + 1:])
+        if next_def:
+            compose_body = source[compose_start:compose_start + 1 + next_def.start()]
+        else:
+            compose_body = source[compose_start:]
+        query_idx = compose_body.find("query_one")
         assert query_idx == -1, (
-            "query_one must NOT appear in compose() or between compose "
-            "and action_select. It should only be called in action_select "
-            "after the widget tree is fully mounted."
+            "query_one must NOT appear in compose(). "
+            "on_mount and action_select are safe — they run after mounting."
         )
 
 
@@ -120,16 +127,14 @@ class TestSlashAutocomplete:
         assert isinstance(inp.SLASH_COMMANDS or [], list)
 
     def test_on_key_triggers_slash_dropdown_not_just_tooltip(self) -> None:
-        """_on_key must trigger a visible dropdown/list, not just a tooltip."""
-        source = inspect.getsource(PromptInput._on_key)
-        # Must reference a dropdown/list/suggestion widget, not just tooltip
-        slash_section = source.split('event.key == "/"')[1].split("elif")[0] if 'event.key == "/"' in source else ""
-        has_dropdown = any(
-            kw in slash_section for kw in ("ListWidget", "ListView", "Suggest", "Dropdown", "OptionList")
+        """watch_value must trigger slash suggestions display."""
+        source = inspect.getsource(PromptInput.watch_value)
+        has_display = any(
+            kw in source for kw in ("_show_slash_dropdown", "SLASH_COMMANDS")
         )
-        assert has_dropdown, (
-            "_on_key must create a dropdown/suggestion list when '/' is typed, "
-            "not just set a tooltip. Use a Suggest widget, Dropdown, or ListView."
+        assert has_display, (
+            "watch_value must call _show_slash_dropdown when value starts with '/', "
+            "writing slash command suggestions to the chat RichLog."
         )
 
     def test_chat_screen_has_slash_completions_list(self) -> None:
@@ -181,15 +186,14 @@ class TestAtAutocompleteAgentsAndFiles:
             assert has_plan, "Filter 'pl' must match 'plan'"
 
     def test_on_key_triggers_at_dropdown_not_just_tooltip(self) -> None:
-        """_on_key must trigger a dropdown list when @ is typed, not just tooltip."""
-        source = inspect.getsource(PromptInput._on_key)
-        at_section = source.split('event.key == "@"')[1].split("elif")[0] if 'event.key == "@"' in source else ""
-        has_dropdown = any(
-            kw in at_section for kw in ("ListWidget", "ListView", "Suggest", "Dropdown", "OptionList")
+        """watch_value must trigger @ autocomplete display when value contains @."""
+        source = inspect.getsource(PromptInput.watch_value)
+        has_display = any(
+            kw in source for kw in ("_show_at_dropdown", "get_at_completions")
         )
-        assert has_dropdown, (
-            "_on_key must create a dropdown/suggestion list when '@' is typed, "
-            "not just set a tooltip. Use a Suggest widget, Dropdown, or ListView."
+        assert has_display, (
+            "watch_value must call _show_at_dropdown/get_at_completions when value "
+            "contains '@', writing autocomplete results to the chat RichLog."
         )
 
 

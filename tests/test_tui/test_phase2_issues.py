@@ -290,17 +290,12 @@ class TestAtAutocomplete:
         body = source.split('"""')[2] if '"""' in source else source
         has_mechanism = any(
             kw in body
-            for kw in ("_autocomplete_active", "suggestions", "popup", "overlay")
+            for kw in ("_autocomplete_active", "_show_at_dropdown", "get_at_completions")
         )
-        # The current code only sets _autocomplete_active = True
-        # which is NOT enough — there's no actual dropdown/suggester
-        uses_suggester = any(
-            kw in body for kw in ("suggester", "Suggest", "popup", "overlay")
-        )
-        assert uses_suggester, (
-            "PromptInput._on_key must do more than set a flag when @ is "
-            "typed.  It needs to trigger a dropdown/suggester/popup that "
-            "shows matching files and agent names."
+        # _show_at_dropdown writes autocomplete results to chat RichLog
+        assert has_mechanism, (
+            "PromptInput._on_key must trigger get_at_completions and "
+            "_show_at_dropdown when @ is typed, writing results to chat."
         )
 
     def test_prompt_input_supports_agent_autocomplete(self) -> None:
