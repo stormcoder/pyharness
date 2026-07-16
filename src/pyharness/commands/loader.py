@@ -117,3 +117,68 @@ class CommandLoader:
         """
         all_cmds = self.load_all()
         return all_cmds.get(name)
+
+
+# ---------------------------------------------------------------------------
+# Global custom command discovery (Bug 7)
+# ---------------------------------------------------------------------------
+
+
+def load_custom_commands() -> dict[str, LoadedCommand]:
+    """Load custom commands from global and project directories.
+
+    Searches ``*.md`` files in:
+
+    - ``~/.config/pyharness/commands/`` (global)
+    - ``~/.agents/commands/`` (global, Claude Code compatible)
+    - ``.pyharness/commands/`` (project)
+    - ``.agents/commands/`` (project, Claude Code compatible)
+
+    Each file uses YAML frontmatter with ``description``, ``agent``, and
+    ``model`` fields, and the body as the command template.
+
+    Returns:
+        Mapping of ``/name`` → :class:`LoadedCommand`.
+    """
+    from pathlib import Path
+
+    import json5
+
+    commands: dict[str, LoadedCommand] = {}
+    home = Path.home()
+    cwd = Path.cwd()
+
+    search_dirs = [
+        home / ".config" / "pyharness" / "commands",
+        home / ".agents" / "commands",
+        cwd / ".pyharness" / "commands",
+        cwd / ".agents" / "commands",
+    ]
+
+    for d in search_dirs:
+        if d.exists():
+            for md_file in sorted(d.glob("*.md")):
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+                    if content.startswith("---"):
+                        parts = content.split("---", 2)
+                        if len(parts) >= 3:
+                            try:
+                                import yaml  # type: ignore[import-untyped]
+
+                                frontmatter = yaml.safe_load(parts[1].strip()) or {}
+                            except ImportError:
+                                frontmatter = json5.loads(parts[1].strip())
+                            template = parts[2].strip()
+                            name = "/" + md_file.stem
+                            commands[name] = LoadedCommand(
+                                name=name,
+                                description=frontmatter.get("description", ""),
+                                template=template,
+                                agent=frontmatter.get("agent", ""),
+                                model=frontmatter.get("model", ""),
+                            )
+                except Exception:
+                    continue
+
+    return commands

@@ -136,7 +136,8 @@ class PyHarnessApp(App):
         "/sessions": "List all sessions",
         "/help": "Show help",
         "/compact": "Compact session context",
-        "/editor": "Open external editor",
+        "/share": "Share current session",
+        "/editor": "Open external editor for composing messages",
         "/export": "Export session to markdown",
         "/models": "List available models",
         "/themes": "List available themes",
@@ -145,6 +146,7 @@ class PyHarnessApp(App):
         "/connect": "Connect to a model provider",
         "/model": "Switch to a specific model (e.g., /model openai:gpt-5)",
         "/variants": "List model variants (thinking/reasoning levels)",
+        "/init": "Create or update AGENTS.md for this project",
     }
 
     def __init__(self) -> None:
@@ -155,7 +157,33 @@ class PyHarnessApp(App):
         """Load project config and push the chat screen on startup."""
         cwd = Path.cwd()
         self.config = load_config(cwd)
+        self._load_keybinds()
         self.push_screen(ChatScreen())
+
+    def _load_keybinds(self) -> None:
+        """Load custom keybinds from tui.json, merging with defaults."""
+        import json
+
+        tui_paths: list[Path] = [
+            Path.home() / ".config" / "pyharness" / "tui.json",
+            Path.cwd() / ".pyharness" / "tui.json",
+        ]
+        for tui_path in tui_paths:
+            if tui_path.exists():
+                try:
+                    with open(tui_path) as f:
+                        tui_config = json.load(f)
+                    custom: dict[str, str] = tui_config.get("keybinds", {})
+                    if custom:
+                        # Merge custom keybinds (override defaults)
+                        for action, key in custom.items():
+                            for i, binding in enumerate(self.BINDINGS):
+                                existing_key, existing_action, *rest = binding
+                                if existing_action == action:
+                                    self.BINDINGS[i] = (key, action, *rest)
+                                    break
+                except Exception:
+                    pass
 
     @property
     def current_agent(self) -> str:
@@ -212,6 +240,24 @@ class PyHarnessApp(App):
         """Interrupt a running agent loop."""
         self.notify("Interrupted", severity="warning")
 
+    def action_sessions(self) -> None:
+        """Open session browser."""
+        from pyharness.tui.screens.sessions import SessionBrowser
+        self.push_screen(SessionBrowser())
+
+    def action_theme(self, name: str | None = None) -> None:
+        """Switch to a theme by name."""
+        if name is None:
+            return
+        from pyharness.tui.themes import get_theme
+        theme = get_theme(name)
+        if theme is None:
+            self.notify(f"Theme '{name}' not found", severity="warning")
+            return
+        # Apply theme colors as CSS variables
+        self.app.dark = "light" not in name.lower()
+        self.notify(f"Theme: {theme['name']}", timeout=2)
+
     def action_toggle_sidebar(self) -> None:
         """Toggle the sidebar visibility (Ctrl+o)."""
         try:
@@ -223,8 +269,7 @@ class PyHarnessApp(App):
 
     def action_command_palette(self) -> None:
         """Show navigable command palette (Ctrl+p)."""
-        from textual.screen import ModalScreen
-        from textual.widgets import ListView, ListItem, Static
+        from textual.widgets import ListItem, ListView
 
         class CommandPalette(ModalScreen[str | None]):
             """Modal overlay with arrow-key-navigable command list."""
@@ -291,25 +336,63 @@ class PyHarnessApp(App):
         self.push_screen(CommandPalette(), callback=self._handle_palette_selection)
 
     def _handle_palette_selection(self, cmd: str | None) -> None:
-        """Execute a command selected from the palette.
+        """Execute the selected command from the palette.
 
-        Handles commands: /help, /new, /connect, /models, /sessions,
-        /undo, /redo, /compact, /export, /memory, /remember, /themes,
-        /editor, /model, /variants, /mine.
+        First tries screen._handle_slash_command dispatch; falls back
+        to direct handling if the screen method is unavailable.
         """
         if cmd is None:
             return
+
+        # First try: dispatch through the current screen's slash handler
         try:
             screen = self.screen
+            chat = screen.query_one("#chat-area")
+            chat.write(f"\n[bold #d2a8ff]{cmd}[/] — {self.COMMANDS.get(cmd, '')}")
+
+            if hasattr(screen, "_handle_slash_command"):
+                screen._handle_slash_command(cmd, chat)
+                return
         except Exception:
-            return
-        if hasattr(screen, "query_one"):
+            pass
+
+        # Fallback: handle directly in the app
+        if cmd == "/connect":
+            self.action_connect()
+        elif cmd == "/new":
+            self.action_new_session()
+        elif cmd == "/help":
             try:
+                screen = self.screen
                 chat = screen.query_one("#chat-area")
-                # Handle commands: /help, /new, /connect, /models, /sessions,
-                # /undo, /redo, /compact, /export, /memory, /remember, /themes,
-                # /editor, /model, /variants, /mine
-                if hasattr(screen, "_handle_slash_command"):
-                    screen._handle_slash_command(cmd, chat)
+                for c, d in self.COMMANDS.items():
+                    chat.write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
             except Exception:
                 pass
+        elif cmd == "/models":
+            try:
+                screen = self.screen
+                chat = screen.query_one("#chat-area")
+                chat.write("[#8b949e]Available models:[/]")
+                chat.write("  anthropic:claude-sonnet-4-5")
+                chat.write("  openai:gpt-5")
+                chat.write("  openrouter:openai/gpt-5")
+            except Exception:
+                pass
+        elif cmd == "/sessions":
+            self.action_sessions()
+        elif cmd == "/themes":
+            from pyharness.tui.themes import get_all_themes
+            try:
+                screen = self.screen
+                chat = screen.query_one("#chat-area")
+                themes = get_all_themes()
+                chat.write("[#8b949e]Available themes:[/]")
+                for name, info in themes.items():
+                    chat.write(
+                        f"  [#7ee787]{name}[/] — [#c9d1d9]{info['name']}: {info['description']}[/]"
+                    )
+            except Exception:
+                pass
+        else:
+            self.notify(f"Command: {cmd}", timeout=2)

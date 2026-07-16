@@ -1,9 +1,12 @@
 """Sidebar with AGENTS.md, Context, and MCP sections — no tabs, no tools.
 
 Phase 2: Redesigned from tabbed panes to labeled sections in a vertical scroll.
+Phase 3: Added refresh methods for MCP status and AGENTS.md content.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Container, VerticalScroll
@@ -15,6 +18,8 @@ class Sidebar(VerticalScroll):
 
     Toggle with ``Ctrl+o`` from :class:`~pyharness.tui.app.PyHarnessApp`.
     """
+
+    can_focus = False  # CRITICAL: Never steal focus from input field
 
     def compose(self) -> ComposeResult:
         # Section 1: AGENTS.md
@@ -46,6 +51,48 @@ class Sidebar(VerticalScroll):
                 "[#8b949e]No MCP servers configured[/]", id="mcp-status"
             )
 
+    # ------------------------------------------------------------------
+    # Public refresh methods (Phase 3)
+    # ------------------------------------------------------------------
+
+    def refresh_mcp_status(self) -> None:
+        """Refresh MCP server status from the MCPLoader."""
+        from pyharness.tools.mcp_loader import MCPLoader
+
+        loader = MCPLoader()
+        # Load from config if available
+        try:
+            from pyharness.config.loader import load_config
+
+            config = load_config(Path.cwd())
+            loader.load_from_config({"mcp": config.mcp})
+        except Exception:
+            pass
+
+        servers = loader.list_servers()
+        status: dict[str, bool] = {}
+        for s in servers:
+            status[s.name] = s.active and s.enabled
+        self.update_mcp_servers(status)
+
+    def refresh_agents_md(self) -> None:
+        """Refresh the AGENTS.md section with actual file content/status."""
+        agents_md = Path.cwd() / "AGENTS.md"
+        if agents_md.exists():
+            content = agents_md.read_text()
+            first_line = content.strip().split("\n")[0][:80]
+            self.query_one("#agents-content", Static).update(
+                f"[#7ee787]AGENTS.md found:[/] {first_line}..."
+            )
+        else:
+            self.query_one("#agents-content", Static).update(
+                "[#8b949e]Run /init to create AGENTS.md for this project[/]"
+            )
+
+    # ------------------------------------------------------------------
+    # Section updaters
+    # ------------------------------------------------------------------
+
     def update_context(
         self, tokens_used: int = 0, tokens_total: int = 200000, cost: float = 0.0
     ) -> None:
@@ -75,7 +122,7 @@ class Sidebar(VerticalScroll):
                 "[#8b949e]No MCP servers configured[/]"
             )
             return
-        lines = []
+        lines: list[str] = []
         for name, active in servers.items():
             dot = "[#3fb950]🟢[/]" if active else "[#f85149]🔴[/]"
             lines.append(f"  {dot} [#c9d1d9]{name}[/]")

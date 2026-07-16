@@ -535,3 +535,43 @@ def todowrite(todos: str) -> str:
 # ---------------------------------------------------------------------------
 
 ALL_BUILTIN_TOOLS: list = [bash, read, write, edit, grep, glob, task, todowrite]
+
+
+# ---------------------------------------------------------------------------
+# Web tools
+# ---------------------------------------------------------------------------
+
+@tool
+def webfetch(url: str) -> str:
+    """Fetch content from a URL and return as text.
+    Use for: reading documentation, fetching API references, checking web resources.
+    Args:
+        url: The URL to fetch (https://...)
+    """
+    try:
+        import httpx
+        response = httpx.get(url, timeout=30, follow_redirects=True)
+        response.raise_for_status()
+        content = response.text[:5000]
+        return content if len(content) < 5000 else content + "\n... (truncated)"
+    except ImportError:
+        return "httpx not installed. Run: uv add httpx"
+    except Exception as e:
+        return f"Error fetching {url}: {e}"
+
+
+@tool
+def websearch(query: str) -> str:
+    """Search the web for information.
+    Use for: finding current information, researching topics, looking up documentation.
+    Args:
+        query: The search query
+    """
+    return (
+        f"Web search for: {query}\n"
+        f"(Web search requires OpenRouter or Exa API configured. "
+        f"Results will appear here once a search provider is connected.)"
+    )
+
+
+ALL_BUILTIN_TOOLS = [bash, read, write, edit, grep, glob, task, todowrite, webfetch, websearch]

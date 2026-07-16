@@ -44,22 +44,24 @@ class PromptInput(Input):
 
     def on_mount(self) -> None:
         """Request focus when mounted so cursor starts in input field."""
+        self.can_focus = True  # We want the input field to be focusable
         self.focus()
 
     async def _on_key(self, event: events.Key) -> None:
-        """Handle ``@`` and ``/`` keys to trigger autocomplete overlays."""
+        """Handle ``@`` and ``/`` keys to trigger autocomplete overlays.
+
+        When ``@`` is typed, shows a dropdown of agent names and matching
+        project files. When ``/`` is typed, shows slash command suggestions.
+
+        Enter key selects the first autocomplete match when active.
+        """
         if event.key == "@":
             self._autocomplete_active = True
-            # Show option list (Dropdown) with agents + file matches
             current = self.value
             at_prefix = current.rsplit("@", 1)[-1] if "@" in current else ""
-            sources: list[str] = []
-            for name in self._agent_names:
-                if name.startswith(at_prefix) or not at_prefix:
-                    sources.append(name)
-            file_matches = self.fuzzy_search_files(at_prefix) if at_prefix else []
-            sources.extend(file_matches)
+            sources = self.get_at_completions(at_prefix)
             self._autocomplete_sources = sources
+            # Show @ reference dropdown (Suggest-style overlay with agent+file list)
             self._show_at_dropdown(at_prefix)
         elif event.key == "/":
             self._autocomplete_active = True
@@ -68,12 +70,32 @@ class PromptInput(Input):
                 matches = [cmd for cmd in self.SLASH_COMMANDS if cmd.startswith(current)]
                 if matches:
                     self._autocomplete_sources = matches
-                    # Show suggestion Dropdown via tooltip overlay
+                    # Show slash command dropdown (ListView-style suggestion list)
                     self._show_slash_dropdown()
+        elif self._autocomplete_active and event.key == "enter":
+            # Select first match on Enter
+            if self._autocomplete_sources:
+                current = self.value
+                if current and "@" in current:
+                    self.value = current.rsplit("@", 1)[0] + "@" + self._autocomplete_sources[0] + " "
+                elif current and current.startswith("/"):
+                    self.value = self._autocomplete_sources[0]
+                self._autocomplete_active = False
+                self.tooltip = None
+                self._autocomplete_sources = []
+                return
         elif self._autocomplete_active and event.key == "escape":
             self._autocomplete_active = False
             self.tooltip = None
             self._autocomplete_sources = []
+        elif self._autocomplete_active and event.key in (".", "_", "space"):
+            # Re-filter on each keystroke
+            current = self.value
+            if "@" in current:
+                at_prefix = current.rsplit("@", 1)[-1]
+                sources = self.get_at_completions(at_prefix)
+                self._autocomplete_sources = sources
+                self._show_at_dropdown(at_prefix)
         await super()._on_key(event)
 
     def _show_at_dropdown(self, prefix: str = "") -> None:
@@ -111,13 +133,24 @@ class PromptInput(Input):
             Combined list of matching agent names and file paths.
         """
         results: list[str] = []
-        # Agent names
+        # Agent names (exact prefix match)
         for name in self._agent_names:
-            if name.startswith(prefix) or not prefix:
+            if name.startswith(prefix.lower()) or not prefix:
                 results.append(name)
-        # File matches (fuzzy)
-        file_matches = self.fuzzy_search_files(prefix) if prefix else []
-        results.extend(file_matches)
+        # File matches (fuzzy search in project)
+        try:
+            from pathlib import Path
+
+            cwd = Path.cwd()
+            if prefix:
+                for path in cwd.rglob(f"{prefix}*"):
+                    if path.is_file() and ".git/" not in str(path) and ".venv/" not in str(path):
+                        rel = str(path.relative_to(cwd))
+                        if len(rel) < 60:
+                            results.append(rel)
+            results = results[:20]
+        except Exception:
+            pass
         return results
 
     def get_at_file_refs(self) -> list[str]:

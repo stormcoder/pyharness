@@ -62,6 +62,17 @@ def load_config(cwd: Path | None = None) -> PyHarnessConfig:
         if agent_name not in resolved.get("agent", {}):
             resolved["agent"][agent_name] = agent_def.model_dump()
 
+    # Load custom agents from markdown directories (global + project)
+    from pyharness.config.agent_loader import discover_agent_directories, load_agents_from_directory
+
+    project_root = cwd or Path.cwd()
+    for agents_dir in discover_agent_directories(project_root):
+        custom_agents = load_agents_from_directory(agents_dir)
+        resolved.setdefault("agent", {})
+        for name, agent_def in custom_agents.items():
+            if name not in resolved.get("agent", {}):
+                resolved["agent"][name] = agent_def.model_dump()
+
     return PyHarnessConfig.model_validate(resolved)
 
 

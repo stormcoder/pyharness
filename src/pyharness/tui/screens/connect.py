@@ -75,22 +75,65 @@ class ConnectScreen(ModalScreen[str | None]):
         if event.button.id == "btn-connect":
             list_view = self.query_one("#provider-list", ListView)
             api_input = self.query_one("#api-key-input", Input)
-            if list_view.index is not None:
-                provider = list_available_providers()[list_view.index]
-                key = api_input.value.strip()
-                if key:
-                    self._save_provider_key(provider, key)
-                    self.dismiss(f"Connected to {provider}")
-                else:
-                    self.notify("Please enter an API key", severity="warning")
+
+            # Find selected provider via highlighted child (robust fallback)
+            children = list(list_view.children)
+            highlighted = list_view.highlighted_child
+            if highlighted is None or highlighted not in children:
+                self.notify("Please select a provider first", severity="warning")
+                return
+
+            idx = children.index(highlighted)
+            providers = list_available_providers()
+            if idx >= len(providers):
+                return
+            provider = providers[idx]
+            key = api_input.value.strip()
+
+            if key:
+                self._save_provider_key(provider, key)
+                self.dismiss(f"Connected to {provider}")
+            else:
+                self.notify("Please enter an API key", severity="warning")
         elif event.button.id == "btn-cancel":
             self.dismiss(None)
 
     def _save_provider_key(self, provider: str, key: str) -> None:
-        """Save provider API key. For now, display instructions."""
+        """Save the provider API key to the user's pyharness config."""
+        import json
+        from pathlib import Path
+
+        # Map provider name to config key
         env_var = f"{provider.upper()}_API_KEY".replace("-", "_")
+
+        # Try to update global config
+        config_path = Path.home() / ".config" / "pyharness" / "pyharness.json"
+
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = json.load(f)
+            except Exception:
+                config = {}
+        else:
+            config = {}
+
+        # Update provider section
+        if "provider" not in config:
+            config["provider"] = {}
+        config["provider"][provider] = {
+            "apiKey": f"{{env:{env_var}}}",
+        }
+
+        # Write back
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
         self.notify(
-            f"Set environment variable: export {env_var}=your-key\n"
-            f"Or add to ~/.config/pyharness/pyharness.json",
-            severity="information", timeout=5,
+            f"[#7ee787]Provider {provider} configured![/]\n"
+            f"[#8b949e]Set env var: export {env_var}=<your-key>[/]\n"
+            f"[#8b949e]Or paste key directly in {config_path}[/]",
+            severity="information",
+            timeout=5,
         )

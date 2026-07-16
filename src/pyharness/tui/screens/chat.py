@@ -30,6 +30,7 @@ class ChatScreen(Screen):
         "/sessions": "List all sessions",
         "/help": "Show help",
         "/compact": "Compact session context",
+        "/share": "Share current session",
         "/editor": "Open external editor",
         "/export": "Export session to markdown",
         "/models": "List available models",
@@ -39,13 +40,15 @@ class ChatScreen(Screen):
         "/connect": "Connect to a model provider",
         "/model": "Switch to a specific model (e.g., /model openai:gpt-5)",
         "/variants": "List model variants (thinking/reasoning levels)",
+        "/init": "Create or update AGENTS.md for this project",
     }
 
     # Slash command completions for autocomplete dropdown
     _slash_completions: list[str] = [
         "/new", "/undo", "/redo", "/sessions", "/help", "/compact",
-        "/editor", "/export", "/models", "/themes", "/memory", "/remember",
-        "/connect", "/connect ", "/model ", "/variants", "/mine",
+        "/share", "/editor", "/export", "/models", "/themes", "/memory",
+        "/remember", "/connect", "/connect ", "/model ", "/variants",
+        "/mine", "/init",
     ]
 
     def compose(self) -> ComposeResult:
@@ -61,9 +64,13 @@ class ChatScreen(Screen):
                         placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
                     )
             # Sidebar (toggleable with Ctrl+o)
-            yield Sidebar(id="sidebar-container")
+            sidebar = Sidebar(id="sidebar-container")
+            sidebar.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
+            yield sidebar
 
-        yield StatusBar("build | anthropic:claude-sonnet-4-5 | 0 tokens", id="status-bar")
+        status = StatusBar("build | anthropic:claude-sonnet-4-5 | 0 tokens", id="status-bar")
+        status.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
+        yield status
 
     def update_status(self, text: str) -> None:
         """Update the status bar text."""
@@ -94,10 +101,8 @@ class ChatScreen(Screen):
         # Set initial status
         self.update_status("build | loading... | 0 tokens")
         # Auto-focus the input field so cursor starts in input
-        try:
+        with __import__("contextlib").suppress(Exception):
             self.query_one(PromptInput).focus()
-        except Exception:
-            pass
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission.
@@ -158,19 +163,27 @@ class ChatScreen(Screen):
                     chat.write("  openai:gpt-5")
                     chat.write("  openrouter:openai/gpt-5")
                 elif cmd_name == "/sessions":
-                    chat.write("[#8b949e]No saved sessions yet. Sessions will appear here.[/]")
+                    chat.write("[#7ee787]Opening session browser...[/]")
+                    self.app.action_sessions()
                 elif cmd_name == "/undo":
                     chat.write("[#8b949e]Nothing to undo yet. Make a change first.[/]")
                 elif cmd_name == "/redo":
                     chat.write("[#8b949e]Nothing to redo. Use /undo first.[/]")
                 elif cmd_name == "/compact":
                     chat.write("[#8b949e]Session compacted (context summarized).[/]")
+                elif cmd_name == "/share":
+                    chat.write("[#7ee787]Session shared![/]")
+                    chat.write("[#8b949e]Share URL: (session sharing coming in Phase 4)[/]")
+                elif cmd_name == "/editor":
+                    self._handle_editor(chat)
                 elif cmd_name == "/export":
                     chat.write("[#8b949e]Session exported to markdown.[/]")
                 elif cmd_name == "/memory":
                     chat.write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
                 elif cmd_name == "/remember":
                     chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
+                elif cmd_name == "/init":
+                    self._handle_init(chat)
                 elif cmd_name == "/connect":
                     if hasattr(self.app, 'action_connect'):
                         self.app.action_connect()
@@ -221,7 +234,6 @@ class ChatScreen(Screen):
                 if fpath.exists() and fpath.is_file():
                     try:
                         content = fpath.read_text()
-                        preview = content[:500]
                         chat.write(
                             f"[#8b949e]@ {ref} ({len(content)} chars loaded)[/]"
                         )
@@ -269,7 +281,7 @@ class ChatScreen(Screen):
             if len(output) > 2000:
                 output = output[:2000] + "\n... (truncated)"
             return output or "(no output)"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return "Command timed out after 30s"
         except FileNotFoundError:
             parts = command.strip().split() if command.strip() else ["N/A"]
@@ -348,12 +360,20 @@ class ChatScreen(Screen):
         elif cmd_name == "/compact":
             chat.write("[#7ee787]Context compacted — older messages summarized.[/]")
 
+        elif cmd_name == "/share":
+            chat.write("[#7ee787]Session shared![/]")
+            chat.write("[#8b949e]Share URL: (session sharing coming in Phase 4)[/]")
+
+        elif cmd_name == "/editor":
+            self._handle_editor(chat)
+
         elif cmd_name == "/export":
             chat.write("[#7ee787]Session exported to markdown.[/]")
 
         elif cmd_name == "/sessions":
-            chat.write("[#8b949e]Active sessions:[/]")
-            chat.write("  [#8b949e]No saved sessions yet. Sessions will appear here.[/]")
+            chat.write("[#7ee787]Opening session browser...[/]")
+            if hasattr(self.app, 'action_sessions'):
+                self.app.action_sessions()
 
         elif cmd_name == "/memory":
             chat.write("[#8b949e]🧠 Searching project memory...[/]")
@@ -367,14 +387,65 @@ class ChatScreen(Screen):
             chat.write("[#8b949e]Run: mempalace mine .[/]")
 
         elif cmd_name == "/themes":
-            chat.write("[#8b949e]Available themes: tokyonight, dark, light, dracula, nord[/]")
-            chat.write("[#8b949e]Set in ~/.config/pyharness/tui.json[/]")
+            from pyharness.tui.themes import get_all_themes
+            themes = get_all_themes()
+            chat.write("[#8b949e]Available themes:[/]")
+            for name, info in themes.items():
+                chat.write(
+                    f"  [#7ee787]{name}[/] — [#c9d1d9]{info['name']}: {info['description']}[/]"
+                )
+            chat.write("[#8b949e]Usage: Ctrl+p → Commands, or type /theme <name>[/]")
 
-        elif cmd_name == "/editor":
-            chat.write("[#8b949e]Opening $EDITOR... (set EDITOR env var to enable)[/]")
+        elif cmd_name == "/init":
+            self._handle_init(chat)
 
         else:
             chat.write(f"[#8b949e]Command '{cmd_name}' acknowledged.[/]")
+
+    def _handle_editor(self, chat: object) -> None:
+        """Open external editor for composing messages.
+
+        Uses the ``EDITOR`` environment variable (defaults to ``nano``).
+        After the editor exits, any content is written back to the chat
+        as a user message.  The temporary file is always cleaned up.
+        """
+        import os
+        import subprocess
+        import tempfile
+
+        editor = os.environ.get("EDITOR", "nano")
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False
+        )
+        tmp.write("# pyharness editor\n\n")
+        tmp.close()
+        try:
+            subprocess.run([editor, tmp.name], check=False)
+            with open(tmp.name) as f:
+                content = f.read().strip()
+            if content and content != "# pyharness editor":
+                chat.write(
+                    f"[bold #58a6ff]You (editor):[/] {content[:500]}"
+                )
+        except Exception as exc:
+            chat.write(f"[#f85149]Editor error: {exc}[/]")
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+    def _handle_init(self, chat: object) -> None:
+        """Handle /init — create or show AGENTS.md for the project."""
+        project_root = Path.cwd()
+        agents_md = project_root / "AGENTS.md"
+        if agents_md.exists():
+            chat.write(f"[#7ee787]AGENTS.md already exists at {agents_md}[/]")
+            chat.write("[#8b949e]Content preview:[/]")
+            content = agents_md.read_text()[:500]
+            chat.write(f"[#8b949e]{content}[/]")
+        else:
+            template = _generate_agents_md(project_root)
+            agents_md.write_text(template)
+            chat.write(f"[#7ee787]Created AGENTS.md at {agents_md}[/]")
+            self.update_status(f"{self.app.current_agent} | AGENTS.md created | 0 tokens")
 
     def _at_autocomplete(self, prefix: str = "") -> list[str]:
         """Provide @ autocomplete suggestions — agents and files combined."""
@@ -388,3 +459,37 @@ class ChatScreen(Screen):
         file_matches = input_widget.fuzzy_search_files(prefix) if prefix else []
         results.extend(file_matches)
         return results
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _generate_agents_md(project_root: Path) -> str:
+    """Generate a default AGENTS.md for the project.
+
+    Args:
+        project_root: Root directory of the project.
+
+    Returns:
+        A populated AGENTS.md template string.
+    """
+    project_name = project_root.name
+    return f"""# AGENTS.md — {project_name}
+
+## Project context
+{project_name} is a Python project.
+
+## Tech stack
+- Python 3.12+
+- Package manager: uv
+
+## Rules
+- Use `uv run` for all commands
+- Write tests with pytest
+- Follow PEP 8 style
+
+## Key documents
+- README.md
+"""

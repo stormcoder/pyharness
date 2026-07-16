@@ -226,3 +226,159 @@ def test_prompt_input_fuzzy_search() -> None:
     assert hasattr(widget, "fuzzy_search_files")
     results = widget.fuzzy_search_files("pyproject")
     assert isinstance(results, list)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 tests — Theme System
+# ---------------------------------------------------------------------------
+
+
+def test_theme_get_theme_valid():
+    """get_theme returns theme dict for known themes."""
+    from pyharness.tui.themes import get_theme
+
+    tokyo = get_theme("tokyonight")
+    assert tokyo is not None
+    assert tokyo["name"] == "Tokyo Night"
+    assert "background" in tokyo["colors"]
+    assert tokyo["colors"]["background"] == "#0d1117"
+
+
+def test_theme_get_theme_invalid():
+    """get_theme returns None for unknown themes."""
+    from pyharness.tui.themes import get_theme
+
+    assert get_theme("nonexistent") is None
+    assert get_theme("") is None
+
+
+def test_theme_get_all_themes():
+    """get_all_themes returns all 5 built-in themes."""
+    from pyharness.tui.themes import get_all_themes
+
+    themes = get_all_themes()
+    assert len(themes) == 5
+    assert "tokyonight" in themes
+    assert "dark" in themes
+    assert "light" in themes
+    assert "dracula" in themes
+    assert "nord" in themes
+
+
+def test_theme_list_theme_names():
+    """list_theme_names returns list of theme keys."""
+    from pyharness.tui.themes import list_theme_names
+
+    names = list_theme_names()
+    assert isinstance(names, list)
+    assert len(names) == 5
+    assert "tokyonight" in names
+    assert "dark" in names
+    assert "light" in names
+
+
+def test_theme_get_all_themes_is_copy():
+    """get_all_themes returns a copy, not a reference."""
+    from pyharness.tui.themes import get_all_themes
+
+    themes1 = get_all_themes()
+    themes2 = get_all_themes()
+    assert themes1 is not themes2
+    assert themes1 == themes2
+
+
+def test_theme_colors_are_valid_hex():
+    """All theme colors are valid 6-char hex codes."""
+    from pyharness.tui.themes import get_all_themes
+
+    for _name, theme in get_all_themes().items():
+        for key, value in theme["colors"].items():
+            assert value.startswith("#"), (
+                f"{theme['name']} color '{key}'={value!r} must start with #"
+            )
+            assert len(value) == 7, (
+                f"{theme['name']} color '{key}'={value!r} must be #RRGGBB"
+            )
+
+
+def test_action_theme_exists():
+    """App has action_theme method."""
+    app = PyHarnessApp()
+    assert hasattr(app, "action_theme")
+    import inspect
+    sig = inspect.signature(app.action_theme)
+    assert "name" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 tests — Session Browser
+# ---------------------------------------------------------------------------
+
+
+def test_session_browser_instantiates():
+    """SessionBrowser screen can be instantiated."""
+    sb = SessionBrowser()
+    assert sb is not None
+
+
+def test_session_browser_has_bindings():
+    """SessionBrowser has escape and enter bindings."""
+    sb = SessionBrowser()
+    binding_keys = {b[0] for b in sb.BINDINGS}
+    assert "escape" in binding_keys, "SessionBrowser missing escape binding"
+    assert "enter" in binding_keys, "SessionBrowser missing enter binding"
+
+
+def test_session_browser_has_dismiss_action():
+    """SessionBrowser has action_dismiss method."""
+    sb = SessionBrowser()
+    assert hasattr(sb, "action_dismiss")
+
+
+def test_session_browser_has_resume_action():
+    """SessionBrowser has action_resume method."""
+    sb = SessionBrowser()
+    assert hasattr(sb, "action_resume")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 tests — Keybind Customization
+# ---------------------------------------------------------------------------
+
+
+def test_app_has_load_keybinds_method():
+    """App has _load_keybinds method."""
+    app = PyHarnessApp()
+    assert hasattr(app, "_load_keybinds")
+
+
+def test_app_has_action_sessions():
+    """App has action_sessions method."""
+    app = PyHarnessApp()
+    assert hasattr(app, "action_sessions")
+
+
+def test_app_keybinds_unchanged_without_tui_json():
+    """_load_keybinds does not crash without tui.json files."""
+    app = PyHarnessApp()
+    original_bindings = list(app.BINDINGS)
+    app._load_keybinds()
+    assert app.BINDINGS == original_bindings
+
+
+def test_app_on_mount_calls_load_keybinds():
+    """on_mount calls _load_keybinds before pushing screen."""
+    import inspect
+    source = inspect.getsource(PyHarnessApp.on_mount)
+    assert "self._load_keybinds()" in source, (
+        "on_mount must call self._load_keybinds()"
+    )
+
+
+def test_themes_import_does_not_raise():
+    """Themes module has BUILTIN_THEMES with valid keys."""
+    from pyharness.tui.themes import BUILTIN_THEMES
+
+    assert len(BUILTIN_THEMES) == 5
+    expected = {"tokyonight", "dark", "light", "dracula", "nord"}
+    assert set(BUILTIN_THEMES) == expected
