@@ -593,3 +593,306 @@ class TestAtAutocompleteRuntime:
                     f"  Line text: {line_text!r}\n"
                     f"  All lines: {lines!r}"
                 )
+
+
+# =============================================================================
+# Bug 6 — /models writes to RichLog instead of showing filterable dropdown
+# =============================================================================
+# /models should display a filterable dropdown (AtAutocomplete widget) above
+# the input field showing available models, NOT write static text to RichLog.
+# The dropdown must allow keyboard navigation (↑↓), Enter to select, and
+# Escape to dismiss.  When no provider is configured, show an empty state.
+# =============================================================================
+
+
+# -- models dropdown helpers ---------------------------------------------------
+
+
+def _models_dropdown(app: PyHarnessApp):
+    """Get the AtAutocomplete models dropdown by its unique ID."""
+    from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+    screen = app.screen_stack[-1]
+    try:
+        return screen.query_one("#models-dropdown", AtAutocomplete)
+    except Exception:
+        return None
+
+
+def _models_dropdown_header(app: PyHarnessApp) -> str:
+    """Get the dropdown header text."""
+    dropdown = _models_dropdown(app)
+    if dropdown is None:
+        return ""
+    try:
+        scroll = dropdown.query_one("#at-scroll")
+        for child in scroll.children:
+            classes = getattr(child, "classes", set())
+            if "at-header" in classes:
+                return getattr(child, "content", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _models_dropdown_items(app: PyHarnessApp) -> list[str]:
+    """Get visible text lines from the models dropdown."""
+    dropdown = _models_dropdown(app)
+    if dropdown is None:
+        return []
+    lines: list[str] = []
+    try:
+        scroll = dropdown.query_one("#at-scroll")
+        for child in scroll.children:
+            content = getattr(child, "content", "")
+            if content and isinstance(content, str) and content.strip():
+                lines.append(content.strip())
+    except Exception:
+        return []
+    return lines
+
+
+def _models_dropdown_count(app: PyHarnessApp) -> int:
+    """Return number of items in the models dropdown."""
+    dropdown = _models_dropdown(app)
+    if dropdown is None:
+        return 0
+    return dropdown.item_count
+
+
+class TestModelsDropdown:
+    """Bug 6: /models must show filterable dropdown, not RichLog text.
+
+    Typing /models and pressing Enter must mount an AtAutocomplete dropdown
+    above the input field with model options, NOT write static text to the
+    chat RichLog.
+
+    Currently ``on_input_submitted`` and ``_handle_slash_command`` both
+    call ``list_available_models()`` and write to RichLog — no dropdown
+    is created for the /models command.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST 1 — /models creates a dropdown widget, not RichLog text
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_command_shows_dropdown_not_richlog_text(self) -> None:
+        """Typing /models Enter must mount an AtAutocomplete dropdown.
+
+        FAILS: current code calls ``chat.write(...)`` in both
+        ``on_input_submitted`` and ``_handle_slash_command`` — no
+        dropdown widget is created for model selection.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Dropdown should not exist before /models
+            before = _models_dropdown(app)
+            assert before is None, (
+                "No models dropdown must exist before typing /models"
+            )
+
+            # Type /models and press Enter
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Now a dropdown should exist with model content
+            dropdown = _models_dropdown(app)
+            assert dropdown is not None, (
+                "FAILS: /models must mount an AtAutocomplete dropdown widget.\n"
+                "  Current behavior: writes model list as static text to RichLog.\n"
+                "  Expected: interactive dropdown with selectable models."
+            )
+
+            # Dropdown must be visible
+            assert dropdown.has_class("-visible") or dropdown.display, (
+                "FAILS: Models dropdown must be visible after /models Enter.\n"
+                "  Current: dropdown exists but is not displayed."
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 2 — Empty state when no provider configured
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_dropdown_empty_with_no_provider(self) -> None:
+        """With no providers, the dropdown must show empty/fallback state.
+
+        FAILS: no dropdown exists for /models — even the raw text output
+        doesn't distinguish between configured and unconfigured states.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Clear providers AFTER mount (on_mount reloads config from disk)
+            app.config.provider = {}
+            app._available_models = []
+            app._model_list_loaded = True
+
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            dropdown = _models_dropdown(app)
+            assert dropdown is not None, (
+                "FAILS: /models must mount a dropdown even with no providers.\n"
+                "  Expected: empty-state message like 'No providers configured'.\n"
+                "  Current: no dropdown widget exists at all."
+            )
+
+            header = _models_dropdown_header(app)
+            items = _models_dropdown_items(app)
+            has_empty_signal = (
+                "no provider" in header.lower()
+                or "no model" in header.lower()
+                or any(
+                    "no provider" in line.lower() or "no model" in line.lower()
+                    for line in items
+                )
+            )
+            assert has_empty_signal or len(items) == 0, (
+                "FAILS: Empty state must signal that no providers are configured.\n"
+                f"  Header: {header!r}\n"
+                f"  Items: {items!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 3 — Dropdown must show model items
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_dropdown_shows_items(self) -> None:
+        """When providers are configured, the dropdown must show 3+ models.
+
+        FAILS: no dropdown — current code writes model names as RichLog text.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Populate the model cache directly (avoids network dependency)
+            app._available_models = [
+                "openrouter:openai/gpt-5",
+                "openrouter:anthropic/claude-sonnet-4-5",
+                "openrouter:google/gemini-3-pro",
+                "openrouter:meta/llama-4-maverick",
+            ]
+            app._model_list_loaded = True
+            # Ensure config reports a provider is present
+            from pyharness.config.schema import ProviderConfig
+            app.config.provider = {"openrouter": ProviderConfig(apiKey="sk-test")}
+
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            count = _models_dropdown_count(app)
+            items = _models_dropdown_items(app)
+            assert count >= 3 or len(items) >= 3, (
+                "FAILS: /models dropdown must show 3+ model items.\n"
+                f"  Dropdown count: {count}\n"
+                f"  Items: {items!r}\n"
+                "  Current: models are written as RichLog text, not dropdown items."
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 4 — Enter on a model selects it
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_dropdown_enter_selects_model(self) -> None:
+        """Pressing Enter on a dropdown item must select the model.
+
+        After selecting, the status bar or input should reflect the change.
+
+        FAILS: no dropdown — there is nothing to select from.
+        """
+        app = PyHarnessApp()
+        if app.config:
+            from pyharness.config.schema import ProviderConfig
+            app.config.provider = {
+                "openrouter": ProviderConfig(apiKey="sk-test"),
+            }
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            dropdown = _models_dropdown(app)
+            assert dropdown is not None, (
+                "FAILS: No dropdown to select from.\n"
+                "  /models must create an interactive dropdown before selection works."
+            )
+
+            # Press down to highlight second item, then Enter to select
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # After selection, the input value should have changed
+            # (should show the selected model, or the status bar should update)
+            dropdown_after = _models_dropdown(app)
+            dropdown_dismissed = dropdown_after is None or not dropdown_after.has_class("-visible")
+
+            assert dropdown_dismissed, (
+                "FAILS: Dropdown must be dismissed after Enter selection.\n"
+                "  Current: dropdown still visible after pressing Enter."
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 5 — Escape dismisses the dropdown
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_dropdown_escape_dismisses(self) -> None:
+        """Pressing Escape must hide/remove the models dropdown.
+
+        FAILS: no dropdown — there is nothing to dismiss.
+        """
+        app = PyHarnessApp()
+        if app.config:
+            from pyharness.config.schema import ProviderConfig
+            app.config.provider = {
+                "openrouter": ProviderConfig(apiKey="sk-test"),
+            }
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            dropdown_before = _models_dropdown(app)
+            assert dropdown_before is not None, (
+                "FAILS: No dropdown to dismiss.\n"
+                "  /models must create an interactive dropdown before Escape can dismiss it."
+            )
+
+            # Press Escape
+            await pilot.press("escape")
+            await pilot.pause()
+
+            dropdown_after = _models_dropdown(app)
+            is_gone = (
+                dropdown_after is None
+                or not dropdown_after.has_class("-visible")
+                or not dropdown_after.display
+            )
+            assert is_gone, (
+                "FAILS: Models dropdown must be hidden after Escape.\n"
+                "  Current: dropdown still visible after pressing Escape."
+            )

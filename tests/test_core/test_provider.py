@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -242,3 +243,272 @@ def test_resolve_model_with_base_url() -> None:
         base_url="https://custom-endpoint.example.com/v1",
     )
     assert model is instance
+
+
+# ---------------------------------------------------------------------------
+# Model Fetch tests — dynamic model fetching from provider APIs (SPEC §10)
+#
+# These tests verify the NEW behavior where models are fetched from live
+# provider APIs (OpenRouter, Ollama) instead of being hardcoded.
+# ALL tests below MUST FAIL until ``fetch_models()`` is implemented and
+# ``list_available_models()`` is refactored to use a cache/fetch mechanism.
+# ---------------------------------------------------------------------------
+
+
+def _empty_config() -> PyHarnessConfig:
+    """Build a config with no providers configured."""
+    return PyHarnessConfig()
+
+
+def _openrouter_config() -> PyHarnessConfig:
+    """Build a config with only openrouter configured."""
+    return PyHarnessConfig(
+        provider={
+            "openrouter": ProviderConfig(apiKey="sk-or-test"),
+        }
+    )
+
+
+def _ollama_config() -> PyHarnessConfig:
+    """Build a config with only ollama configured."""
+    return PyHarnessConfig(
+        provider={
+            "ollama": ProviderConfig(),
+        }
+    )
+
+
+class TestModelFetch:
+    """Model list must be fetched from provider APIs, not hardcoded.
+
+    Currently ``list_available_models()`` returns a hardcoded list of 12
+    model strings.  The target behavior is:
+
+    * ``fetch_models(config)`` — async function that queries provider APIs
+    * ``list_available_models(config)`` — returns cached or fetched models
+    * Fallback to static list when no provider is configured
+    """
+
+    # ------------------------------------------------------------------
+    # TEST 1 — fetch_models function must exist and be callable
+    # ------------------------------------------------------------------
+
+    def test_fetch_models_function_exists(self) -> None:
+        """``fetch_models`` must exist as an async callable.
+
+        FAILS: ``fetch_models`` is not defined anywhere in provider.py.
+        """
+        result: bool = False
+        try:
+            # Attempt import — must succeed for the feature to exist
+            __import__("pyharness.core.provider", fromlist=["fetch_models"])
+            from pyharness.core.provider import fetch_models  # noqa: F811
+
+            # Must be callable (either sync or async)
+            assert callable(fetch_models), "fetch_models must be callable"
+            # Prefer async
+            import asyncio
+
+            if asyncio.iscoroutinefunction(fetch_models):
+                result = True
+            elif callable(fetch_models):
+                result = True
+        except ImportError:
+            pass
+
+        assert result, (
+            "FAILS: ``fetch_models`` does not exist in pyharness.core.provider.\n"
+            "  Expected: an async function that fetches model lists from provider APIs.\n"
+            "  Current: no such function — models are hardcoded in list_available_models()."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 2 — list_available_models must accept config and not be hardcoded
+    # ------------------------------------------------------------------
+
+    def test_list_available_models_not_purely_static(self) -> None:
+        """``list_available_models()`` must accept a config parameter.
+
+        The current implementation returns a hardcoded list unconditionally.
+        The target behavior is to accept a config and return results from
+        a cache or fetch mechanism.
+
+        FAILS: current signature ignores config; return type may be wrong.
+        """
+        import inspect
+
+        from pyharness.core.provider import list_available_models
+
+        sig = inspect.signature(list_available_models)
+        params = list(sig.parameters.keys())
+
+        # Must accept config as a parameter
+        has_config = "config" in params
+        assert has_config, (
+            "FAILS: ``list_available_models()`` must accept a ``config`` parameter.\n"
+            f"  Current signature: ({', '.join(params)})\n"
+            "  Expected: (config: PyHarnessConfig | None = None) -> list[str]"
+        )
+
+        # Return type must be list[str]
+        return_annotation = sig.return_annotation
+        is_list_str = (
+            return_annotation == list[str]
+            or str(return_annotation) == "list[str]"
+            or (hasattr(return_annotation, "__origin__")
+                and return_annotation.__origin__ is list)
+        )
+        assert is_list_str, (
+            "FAILS: ``list_available_models`` must return ``list[str]``.\n"
+            f"  Current return type: {return_annotation}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 3 — fetch_models must query OpenRouter API
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_fetch_models_from_openrouter_returns_list(self) -> None:
+        """``fetch_models()`` with openrouter provider must call OpenRouter API.
+
+        Mocks httpx to return a realistic OpenRouter model list, then
+        verifies the returned model IDs are correctly prefixed.
+
+        FAILS: ``fetch_models`` doesn't exist yet; even if it did, no
+        HTTP fetching logic is implemented.
+        """
+        # Try to import fetch_models
+        try:
+            from pyharness.core.provider import fetch_models
+        except ImportError:
+            pytest.skip("fetch_models not yet implemented")
+
+        config = _openrouter_config()
+        mock_response = {
+            "data": [
+                {"id": "openai/gpt-5"},
+                {"id": "anthropic/claude-sonnet-4-5"},
+            ]
+        }
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        mock_get_response = MagicMock()
+        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.json = MagicMock(return_value=mock_response)
+        mock_client.get = AsyncMock(return_value=mock_get_response)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await fetch_models(config)
+
+        assert isinstance(result, list), (
+            f"FAILS: fetch_models must return a list, got {type(result).__name__}"
+        )
+        for item in result:
+            assert isinstance(item, str), (
+                f"FAILS: each item must be str, got {type(item).__name__}: {item!r}"
+            )
+
+        expected = [
+            "openrouter:openai/gpt-5",
+            "openrouter:anthropic/claude-sonnet-4-5",
+        ]
+        assert result == expected, (
+            f"FAILS: fetch_models returned wrong results.\n"
+            f"  Expected: {expected}\n"
+            f"  Got:      {result}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 4 — fetch_models with empty config returns static fallback
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_fetch_models_empty_config_returns_empty(self) -> None:
+        """``fetch_models()`` with no providers must return an empty list.
+
+        When no provider is configured, no models should be listed. The
+        static fallback is only used when live fetching fails for a
+        configured provider.
+
+        FAILS: ``fetch_models`` doesn't exist.
+        """
+        try:
+            from pyharness.core.provider import fetch_models
+        except ImportError:
+            pytest.skip("fetch_models not yet implemented")
+
+        config = _empty_config()
+        result = await fetch_models(config)
+
+        assert isinstance(result, list), (
+            f"FAILS: must return a list, got {type(result).__name__}"
+        )
+        assert len(result) == 0, (
+            f"FAILS: static fallback must have 5+ models, got {len(result)}: {result}"
+        )
+        for item in result:
+            assert isinstance(item, str), (
+                f"FAILS: each item must be str, got {type(item).__name__}: {item!r}"
+            )
+            assert ":" in item, (
+                f"FAILS: model ID must be 'provider:model-id' format, got: {item!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 5 — fetch_models must query Ollama API
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_fetch_models_with_ollama_configured(self) -> None:
+        """``fetch_models()`` with ollama provider must call Ollama API.
+
+        Mocks httpx to return a realistic Ollama model list, then
+        verifies the returned model IDs are correctly prefixed.
+
+        FAILS: ``fetch_models`` doesn't exist.
+        """
+        try:
+            from pyharness.core.provider import fetch_models
+        except ImportError:
+            pytest.skip("fetch_models not yet implemented")
+
+        config = _ollama_config()
+        mock_response = {
+            "models": [
+                {"name": "llama3:8b"},
+                {"name": "gemma3:27b"},
+            ]
+        }
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        mock_get_response = MagicMock()
+        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.json = MagicMock(return_value=mock_response)
+        mock_client.get = AsyncMock(return_value=mock_get_response)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await fetch_models(config)
+
+        assert isinstance(result, list), (
+            f"FAILS: must return a list, got {type(result).__name__}"
+        )
+        for item in result:
+            assert isinstance(item, str), (
+                f"FAILS: each item must be str, got {type(item).__name__}: {item!r}"
+            )
+
+        expected = [
+            "ollama:llama3:8b",
+            "ollama:gemma3:27b",
+        ]
+        assert result == expected, (
+            f"FAILS: fetch_models returned wrong results.\n"
+            f"  Expected: {expected}\n"
+            f"  Got:      {result}"
+        )

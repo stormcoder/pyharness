@@ -58,12 +58,14 @@ class AtAutocomplete(Widget):
         self,
         agent_names: list[str] | None = None,
         *,
+        title: str = "References",
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
     ) -> None:
         super().__init__(name=name, id=id, classes=classes)
         self._agent_names = agent_names or []
+        self._title = title
         self._items: list[str] = []
         self._highlighted: int = 0
         self._on_select: callable | None = None
@@ -97,7 +99,7 @@ class AtAutocomplete(Widget):
         with VerticalScroll(id="at-scroll"):
             if self._items:
                 yield Static(
-                    f"@ References ({len(self._items)} matches)",
+                    f"{self._title} ({len(self._items)} matches)",
                     classes="at-header",
                 )
                 for i, item in enumerate(self._items):
@@ -142,7 +144,7 @@ class AtAutocomplete(Widget):
         scroll.remove_children()
         scroll.mount(
             Static(
-                f"@ References ({len(self._items)} matches)",
+                f"{self._title} ({len(self._items)} matches)",
                 classes="at-header",
             )
         )

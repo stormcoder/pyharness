@@ -185,16 +185,39 @@ class PyHarnessApp(App):
         "/init": "Create or update AGENTS.md for this project",
     }
 
+    # -- model cache ------------------------------------------------------------
+    _available_models: list[str] = []
+    _model_list_loaded: bool = False
+
+    _config_loaded_from_disk: bool = False
+
     def __init__(self) -> None:
         super().__init__()
-        self.config: PyHarnessConfig | None = None
+        self.config: PyHarnessConfig = PyHarnessConfig()
+        self._config_loaded_from_disk = False
 
     def on_mount(self) -> None:
         """Load project config and push the chat screen on startup."""
-        cwd = Path.cwd()
-        self.config = load_config(cwd)
+        if not self._config_loaded_from_disk and not self.config.provider:
+            cwd = Path.cwd()
+            self.config = load_config(cwd)
+            self._config_loaded_from_disk = True
         self._load_keybinds()
+        # Populate model cache from configured providers (live fetch, async).
+        # Falls back to empty when no provider is set up.
+        import asyncio
+        asyncio.create_task(self.refresh_models())
         self.push_screen(ChatScreen())
+
+    async def refresh_models(self) -> None:
+        """Fetch available models from provider APIs and populate the cache."""
+        from pyharness.core.provider import fetch_models
+
+        try:
+            self._available_models = await fetch_models(self.config)
+        except Exception:
+            self._available_models = []
+        self._model_list_loaded = True
 
     def _load_keybinds(self) -> None:
         """Load custom keybinds from tui.json, merging with defaults."""
@@ -263,6 +286,8 @@ class PyHarnessApp(App):
         """Handle result from the connect dialog."""
         if result:
             self.notify(result, timeout=3)
+            # Refresh models after provider configuration changes
+            self.call_later(self.refresh_models)
 
     def action_quit(self) -> None:
         """Exit the application cleanly."""
@@ -424,13 +449,8 @@ class PyHarnessApp(App):
             elif cmd == "/models":
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
-                    from pyharness.core.provider import list_available_models
-                    models = list_available_models(self.config)
-                    chat.write("[#8b949e]Available models (use /model <id> to switch):[/]")
-                    for m in models[:20]:
-                        marker = "→ " if (self.config and self.config.model == m) else "  "
-                        chat.write(f"  {marker}[#7ee787]{m}[/]")
+                    if hasattr(screen, "_handle_models_command"):
+                        screen._handle_models_command()
                 except Exception:
                     pass
             elif cmd == "/themes":

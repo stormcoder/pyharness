@@ -12,6 +12,7 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
+from textual.events import Key
 from textual.screen import Screen
 from textual.widgets import Input, RichLog
 
@@ -157,12 +158,7 @@ class ChatScreen(Screen):
                     chat.write("[#8b949e]Starting new session...[/]")
                     self.app.action_new_session()
                 elif cmd_name == "/models":
-                    from pyharness.core.provider import list_available_models
-                    models = list_available_models()
-                    chat.write("[#8b949e]Available models (use /model <id> to switch):[/]")
-                    for m in models[:20]:
-                        marker = "→ " if (hasattr(self.app, 'config') and self.app.config and self.app.config.model == m) else "  "
-                        chat.write(f"  {marker}[#7ee787]{m}[/]")
+                    self._handle_models_command()
                 elif cmd_name == "/sessions":
                     chat.write("[#7ee787]Opening session browser...[/]")
                     self.app.action_sessions()
@@ -329,12 +325,7 @@ class ChatScreen(Screen):
                 self._show_connect_dialog(chat)
 
         elif cmd_name == "/models":
-            from pyharness.core.provider import list_available_models
-            models = list_available_models()
-            chat.write("[#8b949e]Available models (use /model <id> to switch):[/]")
-            for m in models[:20]:
-                marker = "→ " if (hasattr(self.app, 'config') and self.app.config and self.app.config.model == m) else "  "
-                chat.write(f"  {marker}[#7ee787]{m}[/]")
+            self._handle_models_command()
 
         elif cmd_name == "/model":
             chat.write("[#8b949e]Usage: /model provider:model-id[/]")
@@ -444,6 +435,138 @@ class ChatScreen(Screen):
             agents_md.write_text(template)
             chat.write(f"[#7ee787]Created AGENTS.md at {agents_md}[/]")
             self.update_status(f"{self.app.current_agent} | AGENTS.md created | 0 tokens")
+
+    def _handle_models_command(self) -> None:
+        """Centralized handler for /models — shows interactive dropdown.
+
+        Uses ``call_after_refresh`` to defer mounting so the DOM is stable.
+        """
+        self.call_after_refresh(self._show_model_dropdown)
+
+    def _show_model_dropdown(self) -> None:
+        """Mount an AtAutocomplete dropdown above the input showing models.
+
+        When no models are available (e.g. no providers configured), the
+        dropdown shows an empty-state message.  Enter selects a model via
+        ``app.switch_model()``; Escape dismisses it.
+        """
+        from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+
+        # Determine the model list to show by checking current config state
+        models: list[str] = []
+        config = getattr(self.app, "config", None)
+        has_providers = (
+            config is not None
+            and config.provider is not None
+            and len(config.provider) > 0
+        )
+
+        if has_providers and hasattr(self.app, "_available_models"):
+            models = list(self.app._available_models)
+        # else: models stays empty → empty-state message below
+
+        if not models:
+            models = ["No providers configured. Use /connect to add one."]
+
+        # Create or reuse the dropdown
+        dropdown = self._get_or_create_models_dropdown()
+        dropdown.update_items(models)
+        dropdown.show_dropdown()
+
+        # Wire the select callback so Enter picks a model
+        def _on_select(item: str) -> None:
+            if item and ":" in item and not item.startswith("No provider"):
+                model_id = item.split(":", 1)[-1] if item.startswith("openrouter:") else item
+                # The full item IS the model ID for non-openrouter; for
+                # openrouter the full string is already "openrouter:X".
+                if hasattr(self.app, "switch_model"):
+                    # Strip icon + leading spaces from item text
+                    self.app.switch_model(item)
+            self._remove_models_dropdown()
+
+        dropdown.set_select_callback(_on_select)
+
+    # -- models dropdown lifecycle ----------------------------------------------
+
+    def _get_or_create_models_dropdown(self) -> AtAutocomplete:
+        """Return existing models dropdown or create and mount a new one."""
+        from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+
+        try:
+            return self.query_one("#models-dropdown", AtAutocomplete)
+        except Exception:
+            pass
+
+        dropdown = AtAutocomplete(
+            id="models-dropdown",
+            classes="autocomplete-dropdown",
+            title="Models",
+        )
+        # Mount inside #input-area, before the PromptInput
+        input_area = self.query_one("#input-area")
+        prompt = input_area.query_one(PromptInput)
+        input_area.mount(dropdown, before=prompt)
+        return dropdown
+
+    def _get_models_dropdown(self) -> AtAutocomplete | None:
+        """Return the models dropdown if it exists, or None."""
+        from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+
+        try:
+            return self.query_one("#models-dropdown", AtAutocomplete)
+        except Exception:
+            return None
+
+    def _remove_models_dropdown(self) -> None:
+        """Remove the models dropdown from the screen."""
+        dropdown = self._get_models_dropdown()
+        if dropdown is not None:
+            dropdown.remove()
+
+    # -- keyboard dispatch -----------------------------------------------------
+    # Arrow keys while /models dropdown is visible navigate it; Escape dismisses.
+
+    def _on_key(self, event: Key) -> None:
+        """Intercept keyboard events when the models dropdown is visible.
+
+        NOTE: Named ``_on_key`` (with underscore) deliberately — in Textual
+        this is NOT a message handler (``on_key`` without underscore is).
+        """
+        dropdown = self._get_models_dropdown()
+        if dropdown is None or not dropdown.has_class("-visible"):
+            return
+
+        key = event.key
+
+        if key == "escape":
+            self._remove_models_dropdown()
+            event.prevent_default()
+            event.stop()
+            return
+
+        if key == "enter":
+            if dropdown.selected_item:
+                if dropdown._on_select:
+                    dropdown._on_select(dropdown.selected_item)
+            else:
+                self._remove_models_dropdown()
+            event.prevent_default()
+            event.stop()
+            return
+
+        if key == "up":
+            if dropdown._highlighted > 0:
+                dropdown.highlight(dropdown._highlighted - 1)
+            event.prevent_default()
+            event.stop()
+            return
+
+        if key == "down":
+            if dropdown._highlighted < dropdown.item_count - 1:
+                dropdown.highlight(dropdown._highlighted + 1)
+            event.prevent_default()
+            event.stop()
+            return
 
     def _at_autocomplete(self, prefix: str = "") -> list[str]:
         """Provide @ autocomplete suggestions — agents and files combined."""

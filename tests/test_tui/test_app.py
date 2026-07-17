@@ -19,10 +19,10 @@ from pyharness.tui.screens.sessions import SessionBrowser
 
 
 def test_app_initializes() -> None:
-    """App can be created without error."""
+    """App can be created without error. Config may be loaded in init."""
     app = PyHarnessApp()
     assert app is not None
-    assert app.config is None  # Not loaded until on_mount
+    # Config may be loaded eagerly (e.g. for model cache init)
 
 
 def test_app_has_bindings() -> None:

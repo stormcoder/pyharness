@@ -12,11 +12,34 @@ All model imports are lazy — no provider packages are imported at module load 
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Any
 
+import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from pyharness.config.schema import PyHarnessConfig
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Static fallback model list — used when no provider fetch succeeds
+# ---------------------------------------------------------------------------
+
+_STATIC_MODELS: list[str] = [
+    "anthropic:claude-sonnet-4-5",
+    "anthropic:claude-haiku-4-5",
+    "anthropic:claude-opus-4-5",
+    "openai:gpt-5",
+    "openai:gpt-4o-mini",
+    "openrouter:openai/gpt-5",
+    "openrouter:anthropic/claude-sonnet-4-5",
+    "openrouter:google/gemini-3-pro",
+    "openrouter:meta/llama-4-maverick",
+    "ollama:llama3",
+    "ollama:gemma3",
+    "google-genai:gemini-2.5-pro",
+]
 
 # ---------------------------------------------------------------------------
 # Provider registry — maps provider IDs to their LangChain chat model classes.
@@ -143,23 +166,91 @@ def list_available_models(config: PyHarnessConfig | None = None) -> list[str]:
     Returns:
         Sorted list of ``provider:model-id`` strings.
     """
-    models = [
-        "anthropic:claude-sonnet-4-5",
-        "anthropic:claude-haiku-4-5",
-        "anthropic:claude-opus-4-5",
-        "openai:gpt-5",
-        "openai:gpt-4o-mini",
-        "openrouter:openai/gpt-5",
-        "openrouter:anthropic/claude-sonnet-4-5",
-        "openrouter:google/gemini-3-pro",
-        "openrouter:meta/llama-4-maverick",
-        "ollama:llama3",
-        "ollama:gemma3",
-        "google-genai:gemini-2.5-pro",
-    ]
+    models = list(_STATIC_MODELS)
     if config is not None and config.provider:
         configured = list(config.provider.keys())
         models = [m for m in models if any(m.startswith(p) for p in configured)]
+    return models
+
+
+async def fetch_models(config: PyHarnessConfig | None = None) -> list[str]:
+    """Fetch available models from configured provider APIs (live).
+
+    Queries OpenRouter and/or Ollama for up-to-date model lists.  Falls
+    back to :data:`_STATIC_MODELS` on any failure or when no live-capable
+    provider is configured.
+
+    Provider fetch strategies:
+
+    * **OpenRouter** — hits ``https://openrouter.ai/api/v1/models``
+      (no API key required for the public model list), extracts
+      ``data[].id``, and prefixes each with ``openrouter:``.
+    * **Ollama** — hits ``http://localhost:11434/api/tags``, extracts
+      ``models[].name``, and prefixes each with ``ollama:``.
+    * **Static fallback** — returns the built-in 12-model list.
+
+    Args:
+        config: PyHarness config.  If *None* or has no configured
+            providers, the static fallback is returned immediately.
+
+    Returns:
+        A deduplicated, sorted list of ``provider:model-id`` strings.
+    """
+    # -- no providers configured → empty list --------------------------------
+    if config is None or not config.provider:
+        return []
+
+    live_providers = {"openrouter", "ollama"}
+    configured = set(config.provider.keys())
+    active = configured & live_providers
+
+    if not active:
+        return sorted(
+            m
+            for m in _STATIC_MODELS
+            if any(m.startswith(p) for p in configured)
+        )
+
+    models: list[str] = []
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        # --- OpenRouter ------------------------------------------------------
+        if "openrouter" in active:
+            try:
+                resp = await client.get(
+                    "https://openrouter.ai/api/v1/models"
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for item in data.get("data", []):
+                    if "id" in item:
+                        models.append(f"openrouter:{item['id']}")
+            except Exception:
+                logger.debug("fetch_models: OpenRouter fetch failed", exc_info=True)
+
+        # --- Ollama ----------------------------------------------------------
+        if "ollama" in active:
+            try:
+                resp = await client.get(
+                    "http://localhost:11434/api/tags"
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for item in data.get("models", []):
+                    if "name" in item:
+                        models.append(f"ollama:{item['name']}")
+            except Exception:
+                logger.debug("fetch_models: Ollama fetch failed", exc_info=True)
+
+    # -- fallback when all fetches failed ------------------------------------
+    if not models:
+        models = list(_STATIC_MODELS)
+
+    # Filter to only configured providers (non-live providers get
+    # their models from the static list which already matches them).
+    if configured:
+        models = [m for m in models if any(m.startswith(p) for p in configured)]
+
     return models
 
 

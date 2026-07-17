@@ -78,10 +78,12 @@ class PromptInput(Input):
                     )
                 elif current and current.startswith("/"):
                     self.value = dropdown.selected_item
-                self._autocomplete_active = False
-                self._autocomplete_sources = []
-                self._remove_dropdown()
-                return
+            self._autocomplete_active = False
+            self._autocomplete_sources = []
+            self._remove_dropdown()
+            # Fall through to super()._on_key(event) so that ChatScreen's
+            # on_input_submitted fires and dispatches slash commands.  We
+            # don't return — Enter must propagate.
 
         # --- Escape: dismiss ---
         if event.key == "escape" and self._autocomplete_active:

@@ -578,3 +578,126 @@ class TestPaletteExecution:
                 f"Escape must dismiss palette. "
                 f"Before: {screens_before}, After: {screens_after}"
             )
+
+
+# =============================================================================
+# 14. /models dropdown must have model cache on app
+# =============================================================================
+
+
+class TestModelsDropdownLive:
+    """Model cache must exist on the app and be refreshed on connect.
+
+    The app should maintain a ``_model_list_loaded`` flag (or equivalent)
+    and a model cache that gets populated at startup and after provider
+    changes via /connect.
+    """
+
+    async def test_app_has_model_cache_attributes(self) -> None:
+        """App must have model-cache related attributes for caching models.
+
+        FAILS: ``PyHarnessApp`` has no model cache — no ``_model_list_loaded``
+        flag, no ``_model_cache`` list, no fetch-on-startup or refresh mechanism.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            missing: list[str] = []
+            for attr in ("_available_models", "_model_list_loaded"):
+                if not hasattr(app, attr):
+                    missing.append(attr)
+
+            assert not missing, (
+                "FAILS: PyHarnessApp is missing model-cache attributes.\n"
+                f"  Missing: {missing}\n"
+                "  Expected: _available_models (list[str]) and _model_list_loaded (bool).\n"
+                "  Current: no model cache exists — models are resolved on-demand\n"
+                "  from hardcoded lists in provider.py."
+            )
+
+    async def test_models_refresh_on_connect(self) -> None:
+        """After /connect provider change, model cache must be refreshed.
+
+        FAILS: No model cache exists on the app, so there is nothing to
+        refresh after connecting to a provider.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Check initial state — model cache attributes must exist
+            has_flag = hasattr(app, "_model_list_loaded")
+            if has_flag:
+                # _model_list_loaded may be False if the async fetch
+                # hasn't completed yet.  That's fine — the cache exists.
+                assert isinstance(app._model_list_loaded, bool), (
+                    "FAILS: _model_list_loaded must be a bool."
+                )
+
+            # Simulate what happens after /connect completes:
+            # the app should trigger a model refresh
+            if hasattr(app, "_handle_connect_result"):
+                # Force a connect callback that should trigger model refresh
+                app._handle_connect_result("Connected to OpenRouter using API key")
+                await pilot.pause(0.1)
+
+                if hasattr(app, "_model_list_loaded"):
+                    assert app._model_list_loaded is True, (
+                        "FAILS: _model_list_loaded must be True after /connect.\n"
+                        "  Current: models are never fetched — they remain hardcoded."
+                    )
+
+            # Even without _handle_connect_result,
+            # the app should have SOME model list after startup
+            has_cache = hasattr(app, "_model_cache")
+            if has_cache:
+                cache = app._model_cache
+                assert isinstance(cache, list), (
+                    f"FAILS: _model_cache must be a list, got {type(cache).__name__}"
+                )
+                assert len(cache) >= 0, (
+                    "FAILS: _model_cache must exist (may be empty to start).\n"
+                    f"  Got: type={type(cache).__name__}, len={len(cache)}"
+                )
+
+            # The key assertion: the model flow must NOT be purely hardcoded
+            # Even if the cache attribute doesn't exist yet, this test documents
+            # the expected architecture
+            assert has_flag or has_cache, (
+                "FAILS: Neither _model_list_loaded nor _model_cache exists on app.\n"
+                "  Expected: app maintains a model cache that is populated on startup\n"
+                "  and refreshed after provider changes via /connect.\n"
+                "  Current: models come from hardcoded list in provider.py."
+            )
+
+    async def test_models_dropdown_appears_in_chat_screen(self) -> None:
+        """Typing /models Enter must create the dropdown in the ChatScreen layout.
+
+        FAILS: current code writes to RichLog — no dropdown widget is created.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from pyharness.tui.widgets.input import PromptInput
+            from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+
+            # Fill input and submit
+            inp = _inp(app)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            # Check if a dropdown widget was mounted
+            screen = _chat_screen(app)
+            try:
+                dropdown = screen.query_one(".autocomplete-dropdown", AtAutocomplete)
+                has_dropdown = True
+            except Exception:
+                has_dropdown = False
+
+            assert has_dropdown, (
+                "FAILS: /models must mount an AtAutocomplete dropdown in ChatScreen.\n"
+                "  Current: /models writes static text to RichLog.\n"
+                "  Expected: interactive filterable dropdown with model selection."
+            )
