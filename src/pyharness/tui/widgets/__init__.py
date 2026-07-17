@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .at_autocomplete import AtAutocomplete
 from .briefing import SessionBriefing
 from .file_tree import FileTree
 from .input import PromptInput
@@ -11,6 +12,7 @@ from .sidebar import Sidebar
 from .status import StatusBar
 
 __all__ = [
+    "AtAutocomplete",
     "FileTree",
     "MemoryTab",
     "MessageWidget",

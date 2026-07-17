@@ -62,6 +62,42 @@ class PyHarnessApp(App):
         border-top: solid #30363d;
         background: #161b22;
         padding: 1 2;
+        layout: vertical;
+    }
+
+    /* @ autocomplete dropdown — appears above the PromptInput */
+    .autocomplete-dropdown {
+        display: none;
+        height: auto;
+        max-height: 10;
+        background: #161b22;
+        border: solid #58a6ff;
+        margin-bottom: 1;
+        scrollbar-size: 0 0;
+    }
+
+    .autocomplete-dropdown.-visible {
+        display: block;
+    }
+
+    .autocomplete-dropdown .at-header {
+        padding: 0 1;
+        color: #8b949e;
+        text-style: bold;
+        background: #0d1117;
+        height: 1;
+    }
+
+    .autocomplete-dropdown .at-item {
+        padding: 0 1;
+        color: #c9d1d9;
+        width: 100%;
+        height: 1;
+    }
+
+    .autocomplete-dropdown .at-item.-highlighted {
+        background: #1f6feb;
+        color: #ffffff;
     }
 
     #sidebar-container {

@@ -75,11 +75,11 @@ class TestDropdownAutocomplete:
             "Slash must use interactive dropdown, not just tooltip"
 
     def test_at_has_dropdown_not_just_tooltip(self):
-        """@ must trigger dropdown, not just set tooltip text."""
+        """@ must trigger dropdown widget, not just write to RichLog."""
         from pyharness.tui.widgets.input import PromptInput
         source = inspect.getsource(PromptInput._show_at_dropdown)
-        assert "Dropdown" in source or "dropdown" in source or "suggest" in source.lower() or "overlay" in source.lower(), \
-            "@ must use interactive dropdown, not just tooltip"
+        assert any(kw in source for kw in ("_get_or_create_dropdown", "AtAutocomplete")), \
+            "@ must use interactive AtAutocomplete dropdown widget, not just RichLog.write"
 
     def test_slash_completions_include_required_commands(self):
         from pyharness.tui.widgets.input import PromptInput

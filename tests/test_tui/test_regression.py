@@ -62,7 +62,6 @@ class TestPaletteNoCrash:
         """
         app = PyHarnessApp()
         source = inspect.getsource(app.action_command_palette)
-        # Extract just the compose body (between "def compose" and next "def ")
         compose_start = source.find("def compose")
         compose_end = source.find("def action_select", compose_start)
         if compose_end == -1:
@@ -78,11 +77,7 @@ class TestPaletteNoCrash:
         """action_select must not query ListView before it's mounted."""
         app = PyHarnessApp()
         source = inspect.getsource(app.action_command_palette)
-        # query_one is safe in on_mount and action_select (post-mount lifecycle).
-        # It must NOT appear in compose() itself.
         compose_start = source.index("def compose")
-        # Find the end of compose: next method definition at same indent level (12 spaces)
-        # Use regex to find the next 'def ' at the same indent
         import re
         next_def = re.search(r"\n            def ", source[compose_start + 1:])
         if next_def:
@@ -281,7 +276,6 @@ class TestSidebarSections:
         (Compose cannot be called outside a Textual app context.)
         """
         source = inspect.getsource(Sidebar)
-        # Count yield statements in compose as a proxy for section count
         compose_body = source.split("def compose")[1].split("    def ")[0] if "def compose" in source and "    def " in source.split("def compose")[1] else source.split("def compose")[1]
         yield_count = compose_body.count("yield ")
         assert yield_count >= 3, (
@@ -343,3 +337,259 @@ class TestSidebarSections:
             "Sidebar must have MCP section listing configured MCP servers "
             "with status indicators (green dot = active, red dot = inactive)."
         )
+
+
+# =============================================================================
+# RUNTIME REGRESSION — @ autocomplete dropdown widget
+# =============================================================================
+# These tests use Textual's run_test() with value assignment to prove
+# that the @ autocomplete creates a proper AtAutocomplete dropdown widget
+# above the PromptInput with visible, navigable items.
+# =============================================================================
+
+
+# -- shared helpers ------------------------------------------------------------
+
+
+def _inp(app: PyHarnessApp) -> PromptInput:
+    """Get the PromptInput from the current screen."""
+    screen = app.screen_stack[-1]
+    return screen.query_one(PromptInput)
+
+
+def _dropdown_lines(app: PyHarnessApp) -> list[str]:
+    """Get visible text lines from dropdown item widgets via ``.content``."""
+    from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+    screen = app.screen_stack[-1]
+    try:
+        dropdown = screen.query_one(".autocomplete-dropdown", AtAutocomplete)
+    except Exception:
+        return []
+    lines: list[str] = []
+    try:
+        scroll = dropdown.query_one("#at-scroll")
+        for child in scroll.children:
+            content = getattr(child, "content", "")
+            if content and isinstance(content, str) and content.strip():
+                lines.append(content.strip())
+    except Exception:
+        return []
+    return lines
+
+
+def _dropdown_header(app: PyHarnessApp) -> str:
+    """Get the dropdown header text (first child of scroll container)."""
+    from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+    screen = app.screen_stack[-1]
+    try:
+        dropdown = screen.query_one(".autocomplete-dropdown", AtAutocomplete)
+        scroll = dropdown.query_one("#at-scroll")
+        for child in scroll.children:
+            classes = getattr(child, "classes", set())
+            if "at-header" in classes:
+                return getattr(child, "content", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _dropdown_item_count(app: PyHarnessApp) -> int:
+    """Return number of items in the dropdown."""
+    from pyharness.tui.widgets.at_autocomplete import AtAutocomplete
+    screen = app.screen_stack[-1]
+    try:
+        dropdown = screen.query_one(".autocomplete-dropdown", AtAutocomplete)
+        return dropdown.item_count
+    except Exception:
+        return 0
+
+
+# -- regression tests ----------------------------------------------------------
+
+
+class TestAtAutocompleteRuntime:
+    """@ autocomplete must produce a visible dropdown widget above the input.
+
+    The dropdown replaces the old RichLog-based approach with a proper
+    AtAutocomplete widget that filters in real-time and is navigable.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST 1 — Basic: typing @ creates and shows dropdown widget
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_at_dropdown_writes_to_richlog(self) -> None:
+        """Typing @ must create a dropdown widget with visible items.
+
+        After setting value to '@', a `.autocomplete-dropdown` widget
+        must exist and contain at least the 4 agent names.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Dropdown should not exist before typing @
+            item_count_before = _dropdown_item_count(app)
+            assert item_count_before == 0, (
+                "Dropdown must NOT exist before typing @"
+            )
+
+            # Set value to trigger watch_value → _show_at_dropdown
+            inp = _inp(app)
+            inp.value = "@"
+            await pilot.pause()
+
+            item_count_after = _dropdown_item_count(app)
+            assert item_count_after >= 4, (
+                "FAILS: Setting value to '@' must create a dropdown "
+                "with at least 4 items (build, plan, general, explore).\n"
+                f"  Items before @: {item_count_before}\n"
+                f"  Items after @: {item_count_after}"
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 2 — Filtering: @b shows agent "build"
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_at_completion_shows_agent_names(self) -> None:
+        """Setting value to '@b' must filter to show 'build' with 🤖 icon.
+
+        The dropdown must exist and content must include 'build 🤖'.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = _inp(app)
+            inp.value = "@b"
+            await pilot.pause()
+
+            lines = _dropdown_lines(app)
+            has_build = any(
+                "build" in line and "🤖" in line for line in lines
+            )
+            assert has_build, (
+                "FAILS: Setting value to '@b' must show 'build 🤖' "
+                "in the dropdown.\n"
+                f"  Dropdown lines: {lines!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 3 — Unfiltered: @ shows "References" heading and agents
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_at_without_prefix_shows_all_sources(self) -> None:
+        """Setting value to '@' (no filter) must show header and all agents.
+
+        The dropdown must have '@ References (N matches)' and 'build'.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = _inp(app)
+            inp.value = "@"
+            await pilot.pause()
+
+            header = _dropdown_header(app)
+            lines = _dropdown_lines(app)
+
+            found_heading = (
+                "references" in header.lower()
+                or "matches" in header.lower()
+                or any(
+                    "references" in line.lower() or "matches" in line.lower()
+                    for line in lines
+                )
+            )
+            found_build = any("build" in line for line in lines)
+
+            assert found_heading, (
+                "FAILS: Setting value to '@' must show a header like "
+                "'@ References (N matches)' in the dropdown.\n"
+                f"  Header: {header!r}\n"
+                f"  Lines: {lines!r}"
+            )
+            assert found_build, (
+                "FAILS: Setting value to '@' must list agent 'build'.\n"
+                f"  Header: {header!r}\n"
+                f"  Lines: {lines!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 4 — Re-filter: change filter and see different results
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_at_backspace_filters_correctly(self) -> None:
+        """Changing the @ filter must update visible results in the dropdown.
+
+        Set @b → @p: dropdown must switch from 'build' to 'plan'.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = _inp(app)
+            # Set @b — should filter to 'build'
+            inp.value = "@b"
+            await pilot.pause()
+
+            # Now set @p — should filter to 'plan'
+            inp.value = "@p"
+            await pilot.pause()
+
+            lines = _dropdown_lines(app)
+
+            has_plan = any("plan" in line for line in lines)
+            has_build = any("build" in line for line in lines)
+
+            assert has_plan, (
+                "FAILS: After setting value to '@p', the dropdown "
+                "must show agent 'plan'.\n"
+                f"  Dropdown lines: {lines!r}"
+            )
+            assert not has_build, (
+                "FAILS: After setting value to '@p', 'build' must NOT "
+                "appear (doesn't match prefix 'p').\n"
+                f"  Dropdown lines: {lines!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 5 — Human-visible output (critical)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_at_dropdown_shows_human_visible_output(self) -> None:
+        """@ autocomplete must produce human-visible output via dropdown.
+
+        After setting value to '@', the dropdown must have at least 2
+        visible items with non-empty content.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            lines_before = _dropdown_lines(app)
+
+            inp = _inp(app)
+            inp.value = "@"
+            await pilot.pause()
+
+            lines = _dropdown_lines(app)
+
+            assert len(lines) >= 2, (
+                "FAILS: Setting value to '@' must produce at least 2 "
+                "visible items in the autocomplete dropdown.\n"
+                f"  Lines before @: {lines_before!r}\n"
+                f"  Lines after @: {lines!r}\n"
+                "  A human user would see NOTHING in the dropdown area."
+            )
+
+            # Every line must contain visible text (non-empty)
+            for i, line_text in enumerate(lines):
+                assert line_text.strip(), (
+                    f"FAILS: Dropdown item {i} is empty or whitespace-only.\n"
+                    f"  Line text: {line_text!r}\n"
+                    f"  All lines: {lines!r}"
+                )

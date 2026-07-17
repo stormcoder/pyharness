@@ -4,6 +4,15 @@ All notable changes to pyharness will be documented in this file.
 
 ## [Unreleased]
 
+### @ Autocomplete Dropdown Widget — 2026-07-16
+
+#### Changed
+- **Replaced RichLog-based @ autocomplete** with a proper `AtAutocomplete` dropdown widget that appears above the PromptInput.
+- **New widget** (`src/pyharness/tui/widgets/at_autocomplete.py`): `AtAutocomplete` extends `Widget` with a scrollable list showing agent names (🤖) and files (📄). Supports real-time filtering, arrow-key navigation, Enter selection, and Escape dismissal.
+- **Updated `PromptInput`** (`src/pyharness/tui/widgets/input.py`): `_show_at_dropdown` and `_show_slash_dropdown` now mount and update the dropdown widget instead of writing to the chat RichLog. Arrow keys navigate, Enter selects, Escape dismisses via `_on_key`.
+- **CSS** (`src/pyharness/tui/app.py`): Added styles for `.autocomplete-dropdown` with `.at-header` and `.at-item.-highlighted` classes.
+- **Tests updated**: 5 regression tests now verify dropdown widget existence, item counts, filtering, and visibility instead of RichLog line counts.
+
 ### Phase 4 — Plugin System
 
 #### Added

@@ -259,20 +259,19 @@ class TestAtSymbol:
     """
 
     async def test_at_onkey_logic_is_correct(self) -> None:
-        """Calling _on_key directly with a synthetic @ event must work."""
+        """Setting value to '@' must trigger autocomplete via watch_value."""
         app = PyHarnessApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = _inp(app)
-            inp.value = ""
-            key_event = events.Key(key="@", character="@")
-            await inp._on_key(key_event)
+            # watch_value fires when value is set — triggers @ autocomplete
+            inp.value = "@"
             await pilot.pause()
             assert inp._autocomplete_active, (
-                "_on_key(@) must set _autocomplete_active = True"
+                "watch_value(@) must set _autocomplete_active = True"
             )
             assert len(inp._autocomplete_sources) >= 4, (
-                f"_on_key(@) must populate sources with 4+ agents, "
+                f"watch_value(@) must populate sources with 4+ agents, "
                 f"got {len(inp._autocomplete_sources)}"
             )
             for agent in ("build", "plan", "general", "explore"):
@@ -496,20 +495,23 @@ class TestAtAutocompleteChat:
     """Typing @ must write autocomplete suggestions to the chat area."""
 
     async def test_at_symbol_writes_autocomplete_to_chat(self) -> None:
-        """Typing @ must not crash and must activate autocomplete state."""
+        """Typing @ must create the autocomplete dropdown widget above input."""
         app = PyHarnessApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = _inp(app)
-            chat = _chat(app)
-            lines_before = len(chat.lines) if hasattr(chat, "lines") else 0
-            # Type @ to trigger autocomplete
+            # Set value to @ to trigger watch_value
             inp.value = "@"
-            await pilot.press("@")
             await pilot.pause(0.1)
             # Verify autocomplete state was activated
-            # (pilot.press may not trigger async _on_key in test mode)
-            assert True  # Just verify no crash — the chat write is async
+            assert inp._autocomplete_active, (
+                "watch_value(@) must set _autocomplete_active = True"
+            )
+            # Dropdown widget should exist
+            dropdown = inp._get_dropdown()
+            assert dropdown is not None, (
+                "Dropdown must be mounted after typing @"
+            )
 
     async def test_at_autocomplete_includes_agents(self) -> None:
         """@ autocomplete must include agent names (build, plan, general, explore)."""
