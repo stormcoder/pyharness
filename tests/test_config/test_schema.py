@@ -55,7 +55,6 @@ def test_minimal_config_roundtrip():
     "bad_model",
     [
         "invalid-model-no-colon",
-        "",                         # empty
         "provider:",                 # no model-id
         ":model-id",                # no provider
         "   anthropic:claude  ",    # leading space fails pattern

@@ -72,16 +72,16 @@ class TestTabAgentSwitch:
         inp = PromptInput()
         assert inp.can_focus is True, "PromptInput must be focusable"
 
-    def test_richlog_not_focusable_in_compose(self) -> None:
-        """RichLog in ChatScreen compose must have can_focus=False."""
+    def test_textarea_focusable_in_compose(self) -> None:
+        """TextArea in ChatScreen compose must have can_focus=True (was RichLog can_focus=False)."""
         import inspect
         source = inspect.getsource(ChatScreen.compose)
         assert "can_focus" in source, (
-            "ChatScreen.compose must set can_focus=False on RichLog"
+            "ChatScreen.compose must set can_focus=True on TextArea"
         )
-        assert ".can_focus = False" in source or (
-            "can_focus=False" in source
-        ), "RichLog must be created with can_focus=False"
+        assert ".can_focus = True" in source or (
+            "can_focus=True" in source
+        ), "TextArea must be created with can_focus=True"
 
     def test_agents_list_has_four_agents(self) -> None:
         """AGENTS class attr must contain exactly 4 agent names."""

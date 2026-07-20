@@ -10,11 +10,35 @@ import asyncio
 import re
 from pathlib import Path
 
+from rich.text import Text as RichText
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.events import Key
 from textual.screen import Screen
-from textual.widgets import Input, RichLog
+from textual.widgets import Input, TextArea
+
+
+def _strip_rich_markup(text: str) -> str:
+    """Convert Rich markup to plain text.
+
+    Uses Rich's own parser for correctness — literal brackets
+    (e.g. in code snippets) are preserved, only markup tags are
+    stripped.
+    """
+    try:
+        return RichText.from_markup(text).plain
+    except Exception:
+        # If Rich can't parse the markup (e.g. unbalanced tags),
+        # strip brackets heuristically
+        return re.sub(r"\[/?[^\]]*\]", "", text)
+
+
+def _append_to_area(area: TextArea, text: str) -> None:
+    """Append plain text to a read-only TextArea and scroll to the end."""
+    current = area.text
+    new_text = current + text if current else text
+    area.load_text(new_text)
+    area.move_cursor(area.document.end, select=False)
 
 from pyharness.tui.widgets.input import PromptInput
 from pyharness.tui.widgets.sidebar import Sidebar
@@ -57,9 +81,9 @@ class ChatScreen(Screen):
         with Horizontal():
             # Main chat area
             with Container(id="chat-container"):
-                rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
-                rich_log.can_focus = False  # CRITICAL: prevents tab focus stealing
-                yield rich_log
+                area = TextArea(id="chat-area", read_only=True, show_line_numbers=False)
+                area.can_focus = True
+                yield area
                 with Container(id="input-area"):
                     yield PromptInput(
                         placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
@@ -73,6 +97,27 @@ class ChatScreen(Screen):
         status.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
         yield status
 
+    def _write(self, text: str) -> None:
+        """Append text to the chat output area, stripping Rich markup.
+
+        All chat messages flow through this method so the TextArea
+        stays plain-text (for mouse selection) while preserving
+        Rich rendering in user-defined message widgets.
+        """
+        try:
+            area = self.query_one("#chat-area", TextArea)
+            # Strip Rich markup for plain-text TextArea display
+            plain = _strip_rich_markup(text)
+            # Strip leading newlines for cleaner display
+            stripped = plain.lstrip("\n")
+            if stripped:
+                # Prepend newline if area already has content
+                if area.text:
+                    stripped = "\n" + stripped
+                _append_to_area(area, stripped)
+        except Exception:
+            pass
+
     def update_status(self, text: str) -> None:
         """Update the status bar text."""
         try:
@@ -83,19 +128,19 @@ class ChatScreen(Screen):
 
     def on_mount(self) -> None:
         """Display welcome message when the screen first appears."""
-        chat = self.query_one("#chat-area", RichLog)
-        chat.write(
+        # Chat output handled via self._write()
+        self._write(
             "[bold #58a6ff]pyharness v0.2.0[/] — "
             "The terminal coding agent that remembers."
         )
-        chat.write(
+        self._write(
             "[#8b949e]Type a prompt and press Enter to send. "
             "Ctrl+q to quit, Ctrl+n for new session.[/]"
         )
-        chat.write(
+        self._write(
             "[#8b949e]Ctrl+o toggle sidebar | Ctrl+p command palette[/]"
         )
-        chat.write(
+        self._write(
             "[#8b949e]! command — run shell | @file — attach file | "
             "/command — dispatch[/]"
         )
@@ -115,7 +160,7 @@ class ChatScreen(Screen):
         - ``/`` → handle slash command
         - default → normal chat message
         """
-        chat = self.query_one("#chat-area", RichLog)
+        # Chat output handled via self._write()
         user_msg = event.value.strip()
 
         if not user_msg:
@@ -124,12 +169,12 @@ class ChatScreen(Screen):
         # --- ! bash command injection ---
         if user_msg.startswith("!"):
             command = user_msg[1:].strip()
-            chat.write(f"\n[bold #d2a8ff]! {command}[/]")
+            self._write(f"\n[bold #d2a8ff]! {command}[/]")
             if command:
                 result = await self._run_bash(command)
-                chat.write(f"[#8b949e]{result}[/]")
+                self._write(f"[#8b949e]{result}[/]")
             else:
-                chat.write("[#8b949e](empty command)[/]")
+                self._write("[#8b949e](empty command)[/]")
             event.input.value = ""
             return
 
@@ -144,86 +189,89 @@ class ChatScreen(Screen):
             ]
             if partial_matches and not any(cmd_name == c for c in self.COMMANDS):
                 # Partial match — show autocomplete suggestions
-                chat.write(f"\n[bold #d2a8ff]{cmd_name}[/] — [#8b949e]autocomplete suggestions:[/]")
+                self._write(f"\n[bold #d2a8ff]{cmd_name}[/] — [#8b949e]autocomplete suggestions:[/]")
                 for suggestion in partial_matches[:8]:
-                    chat.write(f"  [#7ee787]{suggestion}[/] — [#c9d1d9]{self.COMMANDS[suggestion]}[/]")
+                    self._write(f"  [#7ee787]{suggestion}[/] — [#c9d1d9]{self.COMMANDS[suggestion]}[/]")
                 event.input.value = ""
                 return
             if cmd_name in self.COMMANDS:
                 desc = self.COMMANDS[cmd_name]
-                chat.write(f"\n[bold #d2a8ff]{cmd_name}[/] — {desc}")
+                self._write(f"\n[bold #d2a8ff]{cmd_name}[/] — {desc}")
                 # Dispatch known commands
                 if cmd_name == "/help":
                     for c, d in self.COMMANDS.items():
-                        chat.write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
+                        self._write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
                 elif cmd_name == "/new":
-                    chat.write("[#8b949e]Starting new session...[/]")
+                    self._write("[#8b949e]Starting new session...[/]")
                     self.app.action_new_session()
                 elif cmd_name == "/models":
                     self._handle_models_command()
                 elif cmd_name == "/sessions":
-                    chat.write("[#7ee787]Opening session browser...[/]")
+                    self._write("[#7ee787]Opening session browser...[/]")
                     self.app.action_sessions()
                 elif cmd_name == "/undo":
-                    chat.write("[#8b949e]Nothing to undo yet. Make a change first.[/]")
+                    self._write("[#8b949e]Nothing to undo yet. Make a change first.[/]")
                 elif cmd_name == "/redo":
-                    chat.write("[#8b949e]Nothing to redo. Use /undo first.[/]")
+                    self._write("[#8b949e]Nothing to redo. Use /undo first.[/]")
                 elif cmd_name == "/compact":
-                    chat.write("[#8b949e]Session compacted (context summarized).[/]")
+                    self._write("[#8b949e]Session compacted (context summarized).[/]")
                 elif cmd_name == "/share":
-                    chat.write("[#7ee787]Session shared![/]")
-                    chat.write("[#8b949e]Share URL: (session sharing coming in Phase 4)[/]")
+                    self._write("[#7ee787]Session shared![/]")
+                    self._write("[#8b949e]Share URL: (session sharing coming in Phase 4)[/]")
                 elif cmd_name == "/editor":
-                    self._handle_editor(chat)
+                    self._handle_editor()
                 elif cmd_name == "/export":
-                    chat.write("[#8b949e]Session exported to markdown.[/]")
+                    self._write("[#8b949e]Session exported to markdown.[/]")
                 elif cmd_name == "/memory":
-                    chat.write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
+                    self._write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
                 elif cmd_name == "/remember":
-                    chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
+                    self._write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
                 elif cmd_name == "/init":
-                    self._handle_init(chat)
+                    self._handle_init()
                 elif cmd_name == "/connect":
                     if hasattr(self.app, 'action_connect'):
                         self.app.action_connect()
                     else:
                         from pyharness.core.provider import list_available_providers
                         providers = list_available_providers()
-                        chat.write("[#8b949e]Available providers to connect:[/]")
+                        self._write("[#8b949e]Available providers to connect:[/]")
                         for p in providers:
-                            chat.write(f"  [#7ee787]{p}[/] — set {p.upper()}_API_KEY env var or use /connect {p}")
-                        chat.write("[#8b949e]Example: export ANTHROPIC_API_KEY=sk-ant-...[/]")
-                        chat.write("[#8b949e]Example: export OPENAI_API_KEY=sk-...[/]")
-                        chat.write("[#8b949e]Or add to ~/.config/pyharness/pyharness.json provider section.[/]")
+                            self._write(f"  [#7ee787]{p}[/] — set {p.upper()}_API_KEY env var or use /connect {p}")
+                        self._write("[#8b949e]Example: export ANTHROPIC_API_KEY=sk-ant-...[/]")
+                        self._write("[#8b949e]Example: export OPENAI_API_KEY=sk-...[/]")
+                        self._write("[#8b949e]Or add to ~/.config/pyharness/pyharness.json provider section.[/]")
                 elif cmd_name == "/model":
                     if len(cmd_parts) > 1:
                         model_id = cmd_parts[1]
-                        chat.write(f"[#7ee787]Switched to model: {model_id}[/]")
+                        self._write(f"[#7ee787]Switched to model: {model_id}[/]")
                         self.app.update_status_bar()
                         if hasattr(self.app, "switch_model"):
                             self.app.switch_model(model_id)
                     else:
-                        chat.write("[#8b949e]Usage: /model provider:model-id[/]")
-                        chat.write("[#8b949e]Example: /model openai:gpt-5[/]")
-                        chat.write("[#8b949e]Example: /model openrouter:anthropic/claude-sonnet-4-5[/]")
+                        self._write("[#8b949e]Usage: /model provider:model-id[/]")
+                        self._write("[#8b949e]Example: /model openai:gpt-5[/]")
+                        self._write("[#8b949e]Example: /model openrouter:anthropic/claude-sonnet-4-5[/]")
                 elif cmd_name == "/variants":
-                    chat.write("[#8b949e]Available variants (thinking/reasoning levels):[/]")
-                    chat.write("  [#d2a8ff]none[/] — No reasoning (fastest)")
-                    chat.write("  [#d2a8ff]low[/] — Minimal reasoning effort")
-                    chat.write("  [#d2a8ff]medium[/] — Balanced reasoning")
-                    chat.write("  [#d2a8ff]high[/] — High reasoning effort (default for coding)")
-                    chat.write("[#8b949e]Use Ctrl+t to toggle thinking visibility.[/]")
+                    self._write("[#8b949e]Available variants (thinking/reasoning levels):[/]")
+                    self._write("  [#d2a8ff]none[/] — No reasoning (fastest)")
+                    self._write("  [#d2a8ff]low[/] — Minimal reasoning effort")
+                    self._write("  [#d2a8ff]medium[/] — Balanced reasoning")
+                    self._write("  [#d2a8ff]high[/] — High reasoning effort (default for coding)")
+                    self._write("[#8b949e]Use Ctrl+t to toggle thinking visibility.[/]")
                 else:
-                    chat.write(f"[#8b949e]Command '{cmd_name}' acknowledged.[/]")
+                    self._write(f"[#8b949e]Command '{cmd_name}' acknowledged.[/]")
             else:
-                chat.write(f"\n[bold #f85149]Unknown command:[/] {cmd_name}")
-                chat.write("[#8b949e]Try /help to see available commands.[/]")
+                self._write(f"\n[bold #f85149]Unknown command:[/] {cmd_name}")
+                self._write("[#8b949e]Try /help to see available commands.[/]")
             event.input.value = ""
             return
 
         # --- Normal chat message ---
-        chat.write(f"\n[bold #58a6ff]You:[/] {user_msg}")
-        chat.write("[#d29922]⏳ Thinking...[/]")
+        self._write(f"\n[bold #58a6ff]You:[/] {user_msg}")
+
+        # Record in input history
+        inp = self.query_one(PromptInput)
+        inp.push_history(user_msg)
 
         # Check for @ file references and load file content
         at_refs = re.findall(r"@([\w._/-]+)", user_msg)
@@ -233,23 +281,85 @@ class ChatScreen(Screen):
                 if fpath.exists() and fpath.is_file():
                     try:
                         content = fpath.read_text()
-                        chat.write(
+                        self._write(
                             f"[#8b949e]@ {ref} ({len(content)} chars loaded)[/]"
                         )
                     except Exception:
-                        chat.write(
+                        self._write(
                             f"[#f85149]@ {ref} (could not read file)[/]"
                         )
                 else:
-                    chat.write(f"[#f85149]@ {ref} (file not found)[/]")
+                    self._write(f"[#f85149]@ {ref} (file not found)[/]")
 
-        chat.write(
-            "[bold #7ee787]Assistant:[/] I've received your message. "
-            "Full LangGraph agent loop will be wired at the app level."
-        )
+        # Resolve model and run the agent loop
+        model_id = self.app.config.model if self.app.config else ""
+        if not model_id or not model_id.strip():
+            self._write(
+                "[#f85149]Error:[/] No model selected. "
+                "Use [bold]/connect[/] to add a provider, "
+                "then [bold]/models[/] to pick a model."
+            )
+            event.input.value = ""
+            return
+
+        # Check that we have at least one connected provider
+        if not self.app._connected_providers:
+            self._write(
+                "[#f85149]Error:[/] No provider connected. "
+                "Use [bold]/connect[/] to add a provider API key."
+            )
+            event.input.value = ""
+            return
+
+        self._write("[#d29922]⏳ Thinking...[/]")
+
+        try:
+            from pyharness.core.provider import resolve_model
+            from pyharness.core.agent import AgentRunner, create_agent_graph
+            from pyharness.tools.registry import get_registry
+
+            model = resolve_model(model_id, self.app.config)
+        except Exception as exc:
+            self._write(f"[#f85149]Error resolving model:[/] {exc}")
+            event.input.value = ""
+            return
+
+        tools = get_registry().get_all()
+        session_id = self.app._current_session_id or "default"
+        agent_name = self.app.AGENTS[self.app._current_agent_index]
+        graph = create_agent_graph(model, tools)
+        runner = AgentRunner(graph, session_id, agent_name, model_id)
+
+        # Stream agent events into the chat output
+        full_response: list[str] = []
+        tool_block_active = False
+        input_event = event  # Save reference before shadowing in loop
+        try:
+            async for ag_event in runner.run(user_msg):
+                kind = ag_event["type"]
+                if kind == "content":
+                    if not full_response:
+                        self._write("[bold #7ee787]Assistant:[/] ")
+                    token = ag_event["data"]
+                    full_response.append(token)
+                    self._write(token)
+                    tool_block_active = False
+                elif kind == "tool_call":
+                    name = ag_event["data"]["name"]
+                    self._write(f"\n[#d29922]  🔧 {name}...[/]")
+                    tool_block_active = True
+                elif kind == "tool_result":
+                    output = ag_event["data"].get("output", "")
+                    if output:
+                        self._write(f"[#8b949e]  {output}[/]")
+                elif kind == "done":
+                    if tool_block_active:
+                        tool_block_active = False
+        except Exception as exc:
+            self._write(f"\n[#f85149]Agent error:[/] {exc}")
 
         # Clear the input field for the next message
-        event.input.value = ""
+        input_event.input.value = ""
 
     async def _run_bash(self, command: str) -> str:
         """Execute a bash command and return its output.
@@ -298,7 +408,7 @@ class ChatScreen(Screen):
             sidebar.add_class("hidden")
             self.notify("Sidebar hidden", timeout=1)
 
-    def _handle_slash_command(self, cmd: str, chat: object) -> None:
+    def _handle_slash_command(self, cmd: str) -> None:
         """Execute a slash command from the command palette.
 
         Handles ALL commands: /help, /new, /connect, /models, /sessions,
@@ -308,14 +418,14 @@ class ChatScreen(Screen):
         cmd_parts = cmd.split(maxsplit=1)
         cmd_name = cmd_parts[0]
         desc = self.COMMANDS.get(cmd_name, "")
-        chat.write(f"\n[bold #d2a8ff]{cmd_name}[/] — {desc}")
+        self._write(f"\n[bold #d2a8ff]{cmd_name}[/] — {desc}")
 
         if cmd_name == "/help":
             for c, d in self.COMMANDS.items():
-                chat.write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
+                self._write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
 
         elif cmd_name == "/new":
-            chat.write("[#7ee787]Starting new session...[/]")
+            self._write("[#7ee787]Starting new session...[/]")
             if hasattr(self.app, 'action_new_session'):
                 self.app.action_new_session()
 
@@ -324,76 +434,76 @@ class ChatScreen(Screen):
             if hasattr(self.app, 'action_connect'):
                 self.app.action_connect()
             else:
-                self._show_connect_dialog(chat)
+                self._show_connect_dialog()
 
         elif cmd_name == "/models":
             self._handle_models_command()
 
         elif cmd_name == "/model":
-            chat.write("[#8b949e]Usage: /model provider:model-id[/]")
-            chat.write("[#8b949e]Example: /model openai:gpt-5[/]")
+            self._write("[#8b949e]Usage: /model provider:model-id[/]")
+            self._write("[#8b949e]Example: /model openai:gpt-5[/]")
 
         elif cmd_name == "/variants":
-            chat.write("[#8b949e]Model variants (thinking/reasoning levels):[/]")
-            chat.write("  [#d2a8ff]none[/] — Fastest, no reasoning")
-            chat.write("  [#d2a8ff]low[/] — Minimal reasoning")
-            chat.write("  [#d2a8ff]medium[/] — Balanced")
-            chat.write("  [#d2a8ff]high[/] — Deep reasoning (default)")
-            chat.write("[#8b949e]Use Ctrl+t to toggle thinking visibility[/]")
+            self._write("[#8b949e]Model variants (thinking/reasoning levels):[/]")
+            self._write("  [#d2a8ff]none[/] — Fastest, no reasoning")
+            self._write("  [#d2a8ff]low[/] — Minimal reasoning")
+            self._write("  [#d2a8ff]medium[/] — Balanced")
+            self._write("  [#d2a8ff]high[/] — Deep reasoning (default)")
+            self._write("[#8b949e]Use Ctrl+t to toggle thinking visibility[/]")
 
         elif cmd_name == "/undo":
-            chat.write("[#8b949e]Undoing last action...[/]")
+            self._write("[#8b949e]Undoing last action...[/]")
             self.update_status(f"{self.app.current_agent} | undo requested | 0 tokens")
 
         elif cmd_name == "/redo":
-            chat.write("[#8b949e]Redoing last undone action...[/]")
+            self._write("[#8b949e]Redoing last undone action...[/]")
 
         elif cmd_name == "/compact":
-            chat.write("[#7ee787]Context compacted — older messages summarized.[/]")
+            self._write("[#7ee787]Context compacted — older messages summarized.[/]")
 
         elif cmd_name == "/share":
-            chat.write("[#7ee787]Session shared![/]")
-            chat.write("[#8b949e]Share URL: (session sharing coming in Phase 4)[/]")
+            self._write("[#7ee787]Session shared![/]")
+            self._write("[#8b949e]Share URL: (session sharing coming in Phase 4)[/]")
 
         elif cmd_name == "/editor":
-            self._handle_editor(chat)
+            self._handle_editor()
 
         elif cmd_name == "/export":
-            chat.write("[#7ee787]Session exported to markdown.[/]")
+            self._write("[#7ee787]Session exported to markdown.[/]")
 
         elif cmd_name == "/sessions":
-            chat.write("[#7ee787]Opening session browser...[/]")
+            self._write("[#7ee787]Opening session browser...[/]")
             if hasattr(self.app, 'action_sessions'):
                 self.app.action_sessions()
 
         elif cmd_name == "/memory":
-            chat.write("[#8b949e]🧠 Searching project memory...[/]")
-            chat.write("[#8b949e]Install MemPalace for cross-session semantic memory.[/]")
+            self._write("[#8b949e]🧠 Searching project memory...[/]")
+            self._write("[#8b949e]Install MemPalace for cross-session semantic memory.[/]")
 
         elif cmd_name == "/remember":
-            chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact for later recall.[/]")
+            self._write("[#8b949e]🧠 Use /remember <fact> to store a fact for later recall.[/]")
 
         elif cmd_name == "/mine":
-            chat.write("[#8b949e]🧠 Mining project into MemPalace...[/]")
-            chat.write("[#8b949e]Run: mempalace mine .[/]")
+            self._write("[#8b949e]🧠 Mining project into MemPalace...[/]")
+            self._write("[#8b949e]Run: mempalace mine .[/]")
 
         elif cmd_name == "/themes":
             from pyharness.tui.themes import get_all_themes
             themes = get_all_themes()
-            chat.write("[#8b949e]Available themes:[/]")
+            self._write("[#8b949e]Available themes:[/]")
             for name, info in themes.items():
-                chat.write(
+                self._write(
                     f"  [#7ee787]{name}[/] — [#c9d1d9]{info['name']}: {info['description']}[/]"
                 )
-            chat.write("[#8b949e]Usage: Ctrl+p → Commands, or type /theme <name>[/]")
+            self._write("[#8b949e]Usage: Ctrl+p → Commands, or type /theme <name>[/]")
 
         elif cmd_name == "/init":
-            self._handle_init(chat)
+            self._handle_init()
 
         else:
-            chat.write(f"[#8b949e]Command '{cmd_name}' acknowledged.[/]")
+            self._write(f"[#8b949e]Command '{cmd_name}' acknowledged.[/]")
 
-    def _handle_editor(self, chat: object) -> None:
+    def _handle_editor(self) -> None:
         """Open external editor for composing messages.
 
         Uses the ``EDITOR`` environment variable (defaults to ``nano``).
@@ -415,27 +525,27 @@ class ChatScreen(Screen):
             with open(tmp.name) as f:
                 content = f.read().strip()
             if content and content != "# pyharness editor":
-                chat.write(
+                self._write(
                     f"[bold #58a6ff]You (editor):[/] {content[:500]}"
                 )
         except Exception as exc:
-            chat.write(f"[#f85149]Editor error: {exc}[/]")
+            self._write(f"[#f85149]Editor error: {exc}[/]")
         finally:
             Path(tmp.name).unlink(missing_ok=True)
 
-    def _handle_init(self, chat: object) -> None:
+    def _handle_init(self) -> None:
         """Handle /init — create or show AGENTS.md for the project."""
         project_root = Path.cwd()
         agents_md = project_root / "AGENTS.md"
         if agents_md.exists():
-            chat.write(f"[#7ee787]AGENTS.md already exists at {agents_md}[/]")
-            chat.write("[#8b949e]Content preview:[/]")
+            self._write(f"[#7ee787]AGENTS.md already exists at {agents_md}[/]")
+            self._write("[#8b949e]Content preview:[/]")
             content = agents_md.read_text()[:500]
-            chat.write(f"[#8b949e]{content}[/]")
+            self._write(f"[#8b949e]{content}[/]")
         else:
             template = _generate_agents_md(project_root)
             agents_md.write_text(template)
-            chat.write(f"[#7ee787]Created AGENTS.md at {agents_md}[/]")
+            self._write(f"[#7ee787]Created AGENTS.md at {agents_md}[/]")
             self.update_status(f"{self.app.current_agent} | AGENTS.md created | 0 tokens")
 
     def _handle_models_command(self) -> None:

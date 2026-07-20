@@ -21,7 +21,7 @@ PermissionValue = (
 
 # Model string format: "provider:model-id"
 # Allows slashes for OpenRouter-style IDs like "openai/gpt-5"
-MODEL_STRING_PATTERN = r"^[\w][\w-]*:[\w][\w./-]+$"
+MODEL_STRING_PATTERN = r"^(?:([\w][\w-]*:[\w][\w./-]+))?$"
 
 # ---------------------------------------------------------------------------
 # Models

@@ -4,6 +4,17 @@
 
 **"The terminal coding agent that remembers."** — A Python-native TUI LLM harness with persistent semantic memory, powered by LangGraph and MemPalace. MCP-native, Python-first, with cross-session recall that no other terminal coding agent offers.
 
+## Primary Functionality
+
+> **Sending messages to a connected LLM and receiving streaming responses is the #1 core function.** Every other feature — memory, tools, sessions, autocomplete — exists to enhance this primary interaction. The TUI must:
+> 1. Let the user type a message and press Enter
+> 2. Resolve the user's configured model via the provider bridge
+> 3. Execute a LangGraph ReAct agent loop with registered tools
+> 4. Stream the model's response tokens in real time into the chat area
+> 5. Display tool calls and their results inline
+>
+> If a user has connected a provider and selected a model, sending a message MUST call the LLM — never return a stub. Graceful errors only when no provider is connected or no model is selected.
+
 ---
 
 ## 1. Tech Stack & Rationale

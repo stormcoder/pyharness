@@ -20,12 +20,18 @@ if TYPE_CHECKING:
 
 
 class PromptInput(Input):
-    """Enhanced input widget for the pyharness chat prompt.
+    """Chat input with @ autocomplete, slash commands, and bash-like history.
 
     Extends Textual's Input with autocomplete hooks for:
     - ``@`` file references — fuzzy search project files + agent names
     - ``!`` bash command injection — execute inline shell commands
     - ``/`` slash commands — built-in command dispatch with suggestions
+
+    **History** (bash-like):
+    - Up/Down arrow keys navigate submitted message history when no
+      autocomplete dropdown is active.
+    - Ctrl+R opens reverse-search mode.
+    - Submitted messages are pushed to history by the owning screen.
     """
 
     # Agent names for @ autocomplete (including subagents)
@@ -40,9 +46,57 @@ class PromptInput(Input):
 
     _autocomplete_sources: list[str] = []
 
+    # -- History ---------------------------------------------------------------
+    _history: list[str] = []
+    _history_index: int = -1       # -1 = not navigating history
+    _saved_input: str = ""         # original input before history nav
+    _search_mode: bool = False
+    _search_query: str = ""
+    _search_matches: list[tuple[int, str]] = []  # (index, text)
+    _search_match_idx: int = -1
+
     def __init__(self, placeholder: str = "") -> None:
         self._autocomplete_active = False  # type: ignore[assignment]
+        self._history = []
+        self._history_index = -1
+        self._saved_input = ""
+        self._search_mode = False
+        self._search_query = ""
+        self._search_matches = []
+        self._search_match_idx = -1
         super().__init__(placeholder=placeholder)
+
+    def push_history(self, text: str) -> None:
+        """Record a submitted message in history. Deduplicates consecutive duplicates."""
+        if not text or not text.strip():
+            return
+        if self._history and self._history[-1] == text:
+            return  # deduplicate consecutive identical entries
+        self._history.append(text)
+        self._history_index = -1
+
+    def _show_history(self, index: int) -> None:
+        """Replace input value with history entry at given index."""
+        if 0 <= index < len(self._history):
+            self.value = self._history[index]
+            self._history_index = index
+
+    def _restore_saved_input(self) -> None:
+        """Restore to the pre-history-navigation input."""
+        self.value = self._saved_input
+        self._history_index = -1
+        self._saved_input = ""
+
+    def _activate_search(self) -> None:
+        """Enter Ctrl+R reverse-search mode."""
+        self._search_mode = True
+        self._search_query = ""
+        self._search_matches = []
+        self._search_match_idx = -1
+        if self._history_index < 0:
+            self._saved_input = self.value
+        self.value = "(reverse-i-search)`: "
+        self.cursor_position = len(self.value)
 
     def on_mount(self) -> None:
         """Request focus when mounted so cursor starts in input field."""
@@ -57,6 +111,8 @@ class PromptInput(Input):
         if event.key == "tab":
             if hasattr(self.app, "action_switch_agent"):
                 self.app.action_switch_agent()
+            event.stop()
+            event.prevent_default()
             return
 
         # --- Arrow keys for dropdown navigation ---
@@ -65,6 +121,58 @@ class PromptInput(Input):
             if dropdown is not None:
                 delta = -1 if event.key == "up" else 1
                 dropdown.highlight(dropdown.highlighted_index + delta)
+            return
+
+        # --- Ctrl+R: reverse search mode ---
+        if event.key == "ctrl+r":
+            if not self._search_mode:
+                self._activate_search()
+            else:
+                # Already in search mode — cycle to next match
+                if self._search_matches:
+                    self._search_match_idx = (
+                        self._search_match_idx + 1
+                    ) % len(self._search_matches)
+                    self._show_history(
+                        self._search_matches[self._search_match_idx][0]
+                    )
+            event.stop()
+            event.prevent_default()
+            return
+
+        # --- Search mode key handling ---
+        if self._search_mode:
+            if event.key == "escape" or event.key == "ctrl+g":
+                self._search_mode = False
+                self._restore_saved_input()
+                self._search_matches = []
+                self._search_query = ""
+                event.stop()
+                event.prevent_default()
+                return
+            if event.key == "enter":
+                self._search_mode = False
+                self._search_matches = []
+                self._search_query = ""
+                event.stop()
+                event.prevent_default()
+                return
+            # Any other key in search mode — handled in watch_value
+            return
+
+        # --- Arrow keys for history (when no autocomplete) ---
+        if event.key in ("up", "down") and self._history and not self._autocomplete_active:
+            if event.key == "up":
+                if self._history_index < 0:
+                    self._saved_input = self.value
+                    self._show_history(len(self._history) - 1)
+                elif self._history_index > 0:
+                    self._show_history(self._history_index - 1)
+            elif event.key == "down":
+                if self._history_index >= 0 and self._history_index < len(self._history) - 1:
+                    self._show_history(self._history_index + 1)
+                elif self._history_index == len(self._history) - 1:
+                    self._restore_saved_input()
             return
 
         # --- Enter: select from autocomplete ---
@@ -101,6 +209,31 @@ class PromptInput(Input):
 
         Textual calls this reactive watcher reliably after every value
         change — no timing issues with ``_on_key``."""
+
+        # --- Search mode: filter history ---
+        if self._search_mode:
+            PREFIX = "(reverse-i-search)`"
+            if value.startswith(PREFIX):
+                query = value[len(PREFIX):].strip()
+                if query != self._search_query:
+                    self._search_query = query
+                    if query:
+                        self._search_matches = [
+                            (i, h) for i, h in enumerate(self._history)
+                            if query.lower() in h.lower()
+                        ]
+                        self._search_match_idx = (
+                            len(self._search_matches) - 1
+                            if self._search_matches else -1
+                        )
+                        if self._search_matches:
+                            self._show_history(
+                                self._search_matches[self._search_match_idx][0]
+                            )
+                    else:
+                        self._search_matches = []
+            return
+
         if not value:
             self._autocomplete_active = False
             self._autocomplete_sources = []

@@ -220,6 +220,13 @@ class PyHarnessApp(App):
         # Populate _connected_providers from config: a provider is "connected"
         # if it has a non-empty, non-placeholder apiKey.
         self._populate_connected_providers()
+        # If the stored model's provider isn't connected, clear the model.
+        # Prevents showing stale model info on the status bar.
+        model = self.config.model or ""
+        if model and ":" in model:
+            model_provider = model.split(":")[0]
+            if model_provider not in self._connected_providers:
+                self.config.model = ""
         # Populate model cache from configured providers (live fetch, async).
         # Only models from connected providers are included.
         import asyncio
@@ -403,11 +410,25 @@ class PyHarnessApp(App):
             provider_name = result.replace("Connected to ", "")
             self._provider_status[provider_name] = True
             self._connected_providers.add(provider_name)
+
+            # If current model is from a different provider, reset it.
+            # The user just connected to a new provider — they haven't
+            # selected a model for it yet.
+            model = self.config.model or ""
+            if model:
+                old_provider = model.split(":")[0] if ":" in model else ""
+                if old_provider and old_provider != provider_name:
+                    self.config.model = ""
+                    from pyharness.config.loader import save_config
+                    save_config(self.config)
+
             self.notify(result, timeout=3)
             # Refresh models from THIS provider only — now that it's connected
             self.call_later(self.refresh_models)
             # Update sidebar provider status
             self._update_sidebar_providers()
+            # Update status bar to reflect new provider (and blanked model)
+            self.update_status_bar()
 
     def action_quit(self) -> None:
         """Exit the application cleanly — save all state first."""
@@ -563,15 +584,14 @@ class PyHarnessApp(App):
             screen = self.screen
             # Try writing directly to chat first
             try:
-                chat = screen.query_one("#chat-area")
-                chat.write(f"\n[bold #d2a8ff]{cmd}[/] — {self.COMMANDS.get(cmd, '')}")
+                # Chat output via screen._write()
+                screen._write(f"\n[bold #d2a8ff]{cmd}[/] — {self.COMMANDS.get(cmd, '')}")
             except Exception:
                 pass
             # Dispatch through screen handler
             if hasattr(screen, "_handle_slash_command"):
                 try:
-                    chat = screen.query_one("#chat-area")
-                    screen._handle_slash_command(cmd, chat)
+                    screen._handle_slash_command(cmd)
                     return
                 except Exception:
                     pass
@@ -585,8 +605,7 @@ class PyHarnessApp(App):
             elif cmd == "/help":
                 for c, d in self.COMMANDS.items():
                     try:
-                        chat = screen.query_one("#chat-area")
-                        chat.write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
+                        screen._write(f"  [bold #d2a8ff]{c}[/] — [#c9d1d9]{d}[/]")
                     except Exception:
                         pass
             elif cmd == "/models":
@@ -600,11 +619,10 @@ class PyHarnessApp(App):
                 from pyharness.tui.themes import get_all_themes
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
                     themes = get_all_themes()
-                    chat.write("[#8b949e]Available themes:[/]")
+                    screen._write("[#8b949e]Available themes:[/]")
                     for name, info in themes.items():
-                        chat.write(
+                        screen._write(
                             f"  [#7ee787]{name}[/] — [#c9d1d9]{info['name']}: {info['description']}[/]"
                         )
                 except Exception:
@@ -612,36 +630,34 @@ class PyHarnessApp(App):
             elif cmd == "/init":
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
                     if hasattr(screen, "_handle_init"):
-                        screen._handle_init(chat)
+                        screen._handle_init()
                 except Exception:
                     pass
             elif cmd == "/compact":
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
-                    chat.write("[#8b949e]Session compacted (context summarized).[/]")
+                    # Chat output via screen._write()
+                    screen._write("[#8b949e]Session compacted (context summarized).[/]")
                 except Exception:
                     pass
             elif cmd == "/memory":
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
-                    chat.write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
+                    # Chat output via screen._write()
+                    screen._write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
                 except Exception:
                     pass
             elif cmd == "/remember":
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
-                    chat.write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
+                    # Chat output via screen._write()
+                    screen._write("[#8b949e]🧠 Use /remember <fact> to store a fact.[/]")
                 except Exception:
                     pass
             elif cmd == "/editor":
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
                     if hasattr(screen, "_handle_editor"):
                         screen._handle_editor(chat)
                 except Exception:
@@ -649,8 +665,8 @@ class PyHarnessApp(App):
             elif cmd == "/export":
                 try:
                     screen = self.screen
-                    chat = screen.query_one("#chat-area")
-                    chat.write("[#8b949e]Session exported to markdown.[/]")
+                    # Chat output via screen._write()
+                    screen._write("[#8b949e]Session exported to markdown.[/]")
                 except Exception:
                     pass
             else:

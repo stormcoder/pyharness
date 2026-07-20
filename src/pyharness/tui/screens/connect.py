@@ -127,55 +127,37 @@ class ConnectScreen(ModalScreen[str | None]):
         self.run_worker(_verify(), exclusive=False)
 
     def _save_provider_key(self, provider: str, key: str) -> None:
-        """Save the provider API key to the user's pyharness config.
+        """Save the provider API key via the canonical config persistence path.
 
-        Writes to both the global config file on disk AND the in-memory
-        app config so the provider is immediately available.
+        Uses :func:`pyharness.config.loader.save_config` to ensure
+        JSON5 compatibility, env-var placeholder preservation,
+        and proper deep-merge with the existing config file.
         """
-        import json
         from pathlib import Path
 
-        # Try to update global config
-        config_path = Path.home() / ".config" / "pyharness" / "pyharness.json"
+        from pyharness.config.loader import load_config, save_config
 
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    config = json.load(f)
-            except Exception:
-                config = {}
-        else:
-            config = {}
+        # Load the existing config with JSON5 support
+        existing = load_config(Path.cwd())
 
-        # Update provider section — save the ACTUAL key, not a placeholder
-        if "provider" not in config:
-            config["provider"] = {}
-        config["provider"][provider] = {
-            "apiKey": key,
-        }
+        # Update the provider with the actual key
+        from pyharness.config.schema import ProviderConfig
 
-        # Write back to disk
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
+        if existing.provider is None:
+            existing.provider = {}
+        existing.provider[provider] = ProviderConfig(apiKey=key)
+
+        # Persist via canonical path (handles JSON5 comments, env placeholders, merge)
+        save_config(existing)
 
         # Also update the in-memory app config so the provider is
         # immediately visible without waiting for callback reload
         app = self.app
         if hasattr(app, "config"):
-            from pyharness.config.schema import ProviderConfig
-
             app_config = app.config
             if app_config.provider is None:
                 app_config.provider = {}
             app_config.provider[provider] = ProviderConfig(apiKey=key)
-
-        self.notify(
-            f"[#7ee787]Provider {provider} configured![/]\n"
-            f"[#8b949e]Key saved to {config_path}[/]",
-            severity="information",
-            timeout=3,
-        )
 
     async def _verify_and_report(self, provider: str, key: str) -> bool:
         """Verify the connection and return True if successful.

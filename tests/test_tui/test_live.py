@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 from textual import events
-from textual.widgets import RichLog
+from textual.widgets import TextArea
 
 from pyharness.tui.app import PyHarnessApp
 from pyharness.tui.screens.chat import ChatScreen
@@ -33,10 +33,10 @@ def _chat_screen(app: PyHarnessApp) -> ChatScreen:
     return screen
 
 
-def _chat(app: PyHarnessApp) -> RichLog:
+def _chat(app: PyHarnessApp) -> TextArea:
     """Get the chat RichLog widget."""
     screen = _chat_screen(app)
-    return screen.query_one("#chat-area", RichLog)
+    return screen.query_one("#chat-area", TextArea)
 
 
 def _inp(app: PyHarnessApp) -> PromptInput:
@@ -46,17 +46,11 @@ def _inp(app: PyHarnessApp) -> PromptInput:
 
 
 def _chat_text_lines(app: PyHarnessApp) -> list[str]:
-    """Get chat RichLog content as plain text lines.
-
-    RichLog.lines returns Strip objects.  Each Strip iterates Segment
-    objects.  Join all segment text to form plain text per line.
+    """Get chat TextArea content as plain text lines.
+    TextArea.text returns the full content as a single string. Split on newlines.
     """
     chat = _chat(app)
-    lines: list[str] = []
-    for strip in chat.lines:
-        text = "".join(segment.text for segment in strip)
-        lines.append(text)
-    return lines
+    return chat.text.split("\n") if chat.text else []
 
 
 # =============================================================================
@@ -77,7 +71,7 @@ class TestAppStartup:
                 "ChatScreen must be pushed on startup"
             )
             chat = _chat(app)
-            assert chat is not None, "#chat-area RichLog must exist"
+            assert chat is not None, "#chat-area TextArea must exist"
 
     async def test_input_focused_on_startup(self) -> None:
         """PromptInput must have focus on startup."""
