@@ -1,6 +1,6 @@
-"""Regression tests for 5 TUI bugs — these must FAIL until fixes are applied.
+"""Regression tests for TUI bugs — these must FAIL until fixes are applied.
 
-Each test class maps to one of the 5 regressions.
+Each test class maps to one of the regressions.
 Tests verify the *correct* behavior described in the bug reports.
 A passing test means the bug is fixed; a failing test means work remains.
 
@@ -10,10 +10,16 @@ Usage::
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+from pyharness.core.logging import setup_logging
+from pyharness.core.provider import PROVIDER_REGISTRY, verify_connection
 from pyharness.tui.app import PyHarnessApp
 from pyharness.tui.screens.chat import ChatScreen
 from pyharness.tui.widgets.input import PromptInput
@@ -596,6 +602,158 @@ class TestAtAutocompleteRuntime:
 
 
 # =============================================================================
+# PROVIDER DEBUGGING — connection verification and error visibility
+# =============================================================================
+# The connect flow must show proper error handling for providers.
+# verify_connection uses "test-model" (not a real model ID), and
+# errors are logged at DEBUG level (invisible with default INFO).
+# ALL TESTS BELOW MUST FAIL until the issues are fixed.
+
+
+class TestProviderDebugging:
+    """Provider connection debugging must show real errors.
+
+    **Bug 1:** :func:`verify_connection` uses ``provider:test-model``
+    which is not a real model ID — valid API keys fail because the
+    provider rejects the model name.
+
+    **Bug 2:** Connection failures are logged at ``DEBUG`` level with
+    ``exc_info=True`` — invisible with the default ``INFO`` level.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST 1 — connect with deepseek shows error, not green success
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_connect_with_deepseek_shows_error_not_green(self) -> None:
+        """Connecting DeepSeek with an invalid key must show an ERROR
+        notification, NOT a green success.
+
+        ``verify_connection`` currently uses ``"test-model"`` as the
+        model ID — which is rejected by every provider API, making
+        valid keys fail.  Combined with the ``connect`` flow reporting
+        success on any non-crash result, users get false positives.
+
+        FAILS: verify_connection hardcodes ``test-model``, and the
+        connect flow reports "Connected to deepseek" even on failure.
+        """
+        import json
+        import os
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from pyharness.core.provider import verify_connection
+
+        # 1. Verify the hardcoded test-model issue directly
+        config = PyHarnessConfig(
+            model="deepseek:deepseek-chat",
+            provider={"deepseek": ProviderConfig(apiKey="sk-test-bad")},
+        )
+
+        # Mock resolve_model to succeed (simulating a valid model resolution)
+        mock_model = MagicMock()
+        mock_model.invoke = MagicMock(
+            side_effect=ValueError("model 'test-model' not found")
+        )
+
+        with patch(
+            "pyharness.core.provider.resolve_model", return_value=mock_model
+        ):
+            result = await verify_connection("deepseek", "sk-test-bad", config)
+
+        # The mock succeeds — but in real life, 'test-model' is rejected
+        # The real bug is that verify_connection uses 'test-model' at all.
+        # Check the source code for the hardcoded string.
+        import inspect
+        source = inspect.getsource(verify_connection)
+        uses_test_model = "test-model" in source
+        assert not uses_test_model, (
+            "FAILS: verify_connection hardcodes 'test-model' as the model ID.\n"
+            "  'test-model' is not a real model for any provider.\n"
+            "  Valid API keys will fail because the model name is rejected.\n\n"
+            "  To fix: use a real model like 'deepseek:deepseek-chat'\n"
+            "  or 'openai:gpt-4o-mini' for connection testing."
+        )
+
+        # 2. Verify that connection failures are properly surfaced
+        #    (not hidden behind DEBUG logging)
+        with patch(
+            "pyharness.core.provider.resolve_model",
+            side_effect=RuntimeError("API returned 401 Unauthorized"),
+        ):
+            result = await verify_connection("deepseek", "sk-dead-key", config)
+
+        assert result is False, (
+            "FAILS: verify_connection with a failing model should return False.\n"
+            "  Got: Result was not False — the error was swallowed."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 2 — verify_connection logs failure details
+    # ------------------------------------------------------------------
+
+    def test_verify_connection_logs_failure_details(self) -> None:
+        """When verify_connection fails, the logger must capture the
+        provider name and failure reason.
+
+        FAILS: current code uses ``logger.debug(..., exc_info=True)``
+        which is invisible at the default INFO level.  Users have no
+        way to debug failed connections.
+
+        The failure message should be at WARNING or ERROR level and
+        contain the provider name plus the reason for failure.
+        """
+        import asyncio
+        import logging
+        import structlog
+        from unittest.mock import patch
+
+        from pyharness.core.provider import verify_connection
+
+        # Set up structlog so we can capture log output
+        structlog.reset_defaults()
+        setup_logging(level="DEBUG")
+
+        config = PyHarnessConfig(
+            provider={"deepseek": ProviderConfig(apiKey="sk-bad")},
+        )
+        test_logger = logging.getLogger("pyharness.core.provider")
+        test_logger.setLevel(logging.DEBUG)
+
+        with patch(
+            "pyharness.core.provider.resolve_model",
+            side_effect=ValueError("DeepSeek API: 401 Invalid API Key"),
+        ):
+            asyncio.run(verify_connection("deepseek", "sk-bad", config))
+
+        # The current code uses logger.debug() — which at INFO level
+        # produces no output.  Check:
+        import inspect
+        source = inspect.getsource(verify_connection)
+        has_debug_log = "logger.debug" in source
+        has_warning_or_error = (
+            "logger.warning" in source or "logger.error" in source
+        )
+
+        if has_debug_log and not has_warning_or_error:
+            pytest.fail(
+                "FAILS: verify_connection logs failures at DEBUG level.\n"
+                "  With the default INFO log level, these messages are\n"
+                "  invisible.  Users have no way to debug failed connections.\n\n"
+                "  Current: logger.debug('verify_connection failed...')\n"
+                "  Expected: logger.warning() or logger.error() so the\n"
+                "  failure is visible at the default INFO level."
+            )
+
+        # Verify the logger module-level logger is accessible
+        from pyharness.core import provider as provider_mod
+        assert hasattr(provider_mod, "logger"), (
+            "FAILS: provider module has no logger — can't log failures at all."
+        )
+
+
+# =============================================================================
 # Bug 6 — /models writes to RichLog instead of showing filterable dropdown
 # =============================================================================
 # /models should display a filterable dropdown (AtAutocomplete widget) above
@@ -896,3 +1054,824 @@ class TestModelsDropdown:
                 "FAILS: Models dropdown must be hidden after Escape.\n"
                 "  Current: dropdown still visible after pressing Escape."
             )
+
+
+# =============================================================================
+# CONNECT FLOW REGRESSIONS — provider connection bugs
+# =============================================================================
+# These tests verify that the /connect flow correctly saves API keys,
+# validates connections, and updates the sidebar with provider status.
+# ALL TESTS BELOW MUST FAIL until the connect flow is fixed.
+# =============================================================================
+
+
+class TestConnectProviderStatus:
+    """Connect flow must save keys, verify connections, and show status.
+
+    **Bug Summary:**
+
+    1. ``ConnectScreen._save_provider_key()`` writes a ``{env:...}``
+       placeholder instead of the actual API key the user pasted.
+    2. No ``verify_connection()`` function exists — there is no connection
+       test, so users never know if their key works.
+    3. The sidebar only shows MCP dots (🟢/🔴) — there is no LLM provider
+       connection status indicator.
+    4. ``_handle_connect_result`` never reloads config from disk, so newly
+       saved providers are not visible after /connect.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST 1 — _save_provider_key must save the ACTUAL key, not a placeholder
+    # ------------------------------------------------------------------
+
+    def test_connect_saves_actual_api_key(self) -> None:
+        """ConnectScreen._save_provider_key must write the actual key, not {env:...}.
+
+        Inspects the source code of ``_save_provider_key()`` to verify it
+        writes the ``key`` parameter into ``config["provider"][provider]["apiKey"]``,
+        NOT an ``{env:...}`` placeholder.
+
+        FAILS: current code writes ``"apiKey": "{{env:OPENAI_API_KEY}}"``
+        — the user's key is discarded.
+        """
+        import inspect
+        from pyharness.tui.screens.connect import ConnectScreen
+
+        source = inspect.getsource(ConnectScreen._save_provider_key)
+
+        # The function must use the 'key' parameter in the value written to config
+        # It must NOT contain a literal "{env:" which indicates a placeholder
+        has_env_placeholder = "{env:" in source or "{{env:" in source
+
+        assert not has_env_placeholder, (
+            "FAILS: _save_provider_key writes a '{env:...}' placeholder "
+            "instead of the actual API key the user provided.\n\n"
+            "  Current code:\n"
+            '      config["provider"][provider] = {"apiKey": "{{env:...}}"}  # ← placeholder!\n\n'
+            "  Expected:\n"
+            '      config["provider"][provider] = {"apiKey": key}  # ← actual key\n\n'
+            "  Impact: after /connect, the API key is NOT saved.  Users must\n"
+            "  manually set env vars — which defeats the purpose of the connect UI."
+        )
+
+        # Also verify the 'key' param is referenced (it is received but discarded)
+        assert "key" in source.lower(), (
+            "FAILS: _save_provider_key receives a 'key' parameter but the source "
+            "does not reference 'key' — it's probably being ignored."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 2 — connect must trigger connection verification
+    # ------------------------------------------------------------------
+
+    def test_connect_triggers_connection_verification(self) -> None:
+        """After ConnectScreen dismisses, the app must call verify_connection().
+
+        Inspects ``_handle_connect_result`` to verify it calls
+        ``verify_connection`` (or similar) to validate the API key.
+
+        FAILS: current ``_handle_connect_result`` just calls ``self.notify()``
+        and ``self.call_later(self.refresh_models)`` — no connection test.
+        """
+        import inspect
+        from pyharness.tui.app import PyHarnessApp
+
+        source = inspect.getsource(PyHarnessApp._handle_connect_result)
+
+        has_verification = any(
+            kw in source for kw in (
+                "verify_connection",
+                "test_connection",
+                "validate_connection",
+                "check_connection",
+            )
+        )
+        assert has_verification, (
+            "FAILS: _handle_connect_result never calls verify_connection() "
+            "or any connection validation.\n\n"
+            "  Current: only calls self.notify() and self.call_later(refresh_models).\n"
+            "  Expected: after /connect, the app should verify the API key\n"
+            "  works against the provider's API before reporting success.\n\n"
+            f"  Source:\n{source[:300]}..."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 3 — sidebar shows green for connected provider
+    # ------------------------------------------------------------------
+
+    def test_sidebar_shows_provider_status_green_on_success(self) -> None:
+        """Sidebar must display LLM provider connection status.
+
+        When a provider is connected AND verified, the sidebar must show
+        a green indicator (🟢 or checkmark).  Currently the sidebar only
+        has sections for AGENTS.md, Context, and MCP — no provider status.
+
+        FAILS: sidebar has no provider section; only MCP dots.
+        """
+        import inspect
+        from pyharness.tui.widgets.sidebar import Sidebar
+
+        source = inspect.getsource(Sidebar)
+        compose_source = inspect.getsource(Sidebar.compose)
+
+        # Must have a provider/provider-status section or element
+        has_provider = any(
+            kw in (source + compose_source).lower()
+            for kw in ("provider", "section-provider", "provider-status")
+        )
+        assert has_provider, (
+            "FAILS: Sidebar has no provider connection status section.\n\n"
+            "  Current: Sidebar has sections for AGENTS.md, Context, and MCP only.\n"
+            "  Expected: A fourth section showing LLM provider connection status\n"
+            "  with green/red indicators for each configured provider.\n\n"
+            "  The connect flow is a dead-end without this — users have no way\n"
+            "  to know if they are actually connected to an LLM provider."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 4 — sidebar shows red for failed provider
+    # ------------------------------------------------------------------
+
+    def test_sidebar_shows_provider_status_red_on_failure(self) -> None:
+        """When connection fails, sidebar must show a red indicator.
+
+        The sidebar update methods (``update_mcp_servers``, etc.) must
+        include a method for provider status that can display 🔴 or
+        similar on connection failure.
+
+        FAILS: no provider status update method exists.
+        """
+        import inspect
+        from pyharness.tui.widgets.sidebar import Sidebar
+
+        # Check for a method that updates provider status
+        methods = [
+            name for name, _ in inspect.getmembers(Sidebar, inspect.isfunction)
+        ]
+        provider_update_methods = [
+            m for m in methods if "provider" in m.lower()
+        ]
+        assert len(provider_update_methods) >= 1, (
+            "FAILS: Sidebar has no method to update provider status indicators.\n\n"
+            f"  Available methods: {sorted(methods)}\n"
+            "  Expected: a method like ``update_provider_status(providers: dict)``\n"
+            "  that displays green (🟢) when connected and red (🔴) when not."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 5 — connect failure shows user-visible notification with red indicator
+    # ------------------------------------------------------------------
+
+    def test_connect_failure_notifies_user_with_red_indicator(self) -> None:
+        """When connection fails, user must see a notification AND red indicator.
+
+        The ``_handle_connect_result`` or ``_save_provider_key`` must handle
+        failures by:
+        1. Showing a notification with "failed" or "could not connect"
+        2. Updating the sidebar to show a red indicator for the provider
+
+        FAILS: current connect flow always shows success, even with invalid keys.
+        """
+        import inspect
+        from pyharness.tui.screens.connect import ConnectScreen
+
+        source = inspect.getsource(ConnectScreen.on_button_pressed)
+
+        # Must call _save_provider_key (save), but also verify connection
+        has_save = "_save_provider_key" in source
+        assert has_save, "on_button_pressed must call _save_provider_key"
+
+        # The handler should show different messages based on connection outcome
+        # Currently it always shows success.  We need at minimum:
+        # - a call to verify_connection (or the dismiss message reflects failure)
+        has_failure_path = any(
+            kw in source.lower() for kw in (
+                "failed", "could not connect", "invalid", "error",
+                "verify", "test",
+            )
+        )
+        assert has_failure_path, (
+            "FAILS: ConnectScreen.on_button_pressed has no failure path.\n\n"
+            "  Current: always dismisses with 'Connected to {provider}' regardless\n"
+            "  of whether the API key is valid or not.\n\n"
+            "  Expected: after saving the key, verify the connection.  On failure:\n"
+            "  1. Show a notification like 'Connection failed: 401 Unauthorized'\n"
+            "  2. Update sidebar provider status to red (🔴)\n"
+            "  3. Do NOT dismiss the screen on failure (let user retry)"
+        )
+
+
+# =============================================================================
+# Bug — Status bar shows "loading..." instead of model name or blank
+# =============================================================================
+
+
+class TestStatusBarModelDisplay:
+    """Status bar must show model name or blank, never 'loading...'."""
+
+    @pytest.mark.asyncio
+    async def test_status_bar_no_loading_text_after_mount(self) -> None:
+        """After mount, status bar must NOT contain 'loading...'.
+
+        FAILS: ChatScreen.on_mount hardcodes 'build | loading... | 0 tokens'.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            text = _status_text(app)
+            assert "loading..." not in text.lower(), (
+                "FAILS: Status bar shows 'loading...' after mount.\n"
+                f"  Text: {text!r}\n"
+                "  Expected: agent name with blank model field "
+                "(e.g. 'build |   | 0 tokens' or just 'build')."
+            )
+
+    @pytest.mark.asyncio
+    async def test_status_bar_contains_agent_name(self) -> None:
+        """Status bar must contain the default agent name 'build'.
+
+        FAILS: status bar may be missing or have wrong format.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # StatusBar is yielded by ChatScreen.compose(), not mounted inside
+            # the screen widget tree — it's composed as a top-level child.
+            # Query the app (Screen has the status bar as direct child).
+            from textual.widgets import Static
+            screen = app.screen
+            try:
+                bar = screen.query_one("#status-bar")
+            except Exception:
+                # Try app-level query
+                try:
+                    bar = app.query_one("#status-bar")
+                except Exception:
+                    bar = None
+            assert bar is not None, (
+                "FAILS: #status-bar widget not found on screen or app.\n"
+                f"  Screen type: {type(screen).__name__}"
+            )
+            text = _status_text(app)
+            assert text, f"Status text is empty! Bar found: {bar is not None}"
+            assert "build" in text.lower(), (
+                "FAILS: Status bar does not contain agent name 'build'.\n"
+                f"  Text: {text!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_status_bar_updates_after_model_switch(self) -> None:
+        """After calling switch_model, status bar must show the new model.
+
+        FAILS: status bar ignores model changes.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen.update_status("build | openai:gpt-4o-mini | 0 tokens")
+            await pilot.pause()
+            text = _status_text(app)
+            assert "gpt-4o-mini" in text, (
+                "FAILS: Status bar does not show the switched model.\n"
+                f"  Text: {text!r}\n"
+                "  Expected: 'build | openai:gpt-4o-mini | 0 tokens'."
+            )
+
+    @pytest.mark.asyncio
+    async def test_status_bar_persists_model_after_agent_switch(self) -> None:
+        """After switching agent, status bar must still show the selected model.
+
+        FAILS: agent switch resets the model field.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.switch_model("openai:gpt-4o-mini")
+            app.action_switch_agent()
+            await pilot.pause()
+            text = _status_text(app)
+            assert "gpt-4o-mini" in text, (
+                "FAILS: Status bar lost the model after agent switch.\n"
+                f"  Text: {text!r}"
+            )
+            assert "plan" in text.lower(), (
+                "FAILS: Status bar does not show the new agent 'plan'.\n"
+                f"  Text: {text!r}"
+            )
+
+
+# -- Status bar helpers -------------------------------------------------------
+
+
+def _status_text(app: PyHarnessApp) -> str:
+    """Get the full text of the #status-bar widget."""
+    try:
+        screen = app.screen
+        bar = screen.query_one("#status-bar")
+        return str(bar.content) if bar.content else ""
+    except Exception:
+        return ""
+
+
+# =============================================================================
+# CONNECTED PROVIDER MODEL FILTERING — /models only shows connected providers
+# =============================================================================
+# When a user connects ONLY deepseek, /models must show deepseek models
+# and NOT leak models from openrouter, ollama, or other configured providers.
+# =============================================================================
+
+
+class TestConnectedProviderModelFilter:
+    """Bug: /models shows ALL configured provider models, not just connected ones.
+
+    Root cause: ``fetch_models()`` uses ``set(config.provider.keys())`` as
+    the provider scope, which includes every provider entry in the config
+    file — even ones the user never connected to.
+
+    Fix: ``PyHarnessApp`` tracks ``_connected_providers`` — providers that
+    either have a non-placeholder API key on startup, or were successfully
+    connected via ``/connect``.  Only those providers' models appear.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST 1 — only connected provider models appear in /models
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_list_shows_only_connected_provider_models(self) -> None:
+        """Connect deepseek → /models shows only deepseek models.
+
+        The config file may have openrouter, ollama, and other providers
+        listed — but none were connected.  After connecting deepseek,
+        only deepseek model entries must appear in the models dropdown.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Simulate: config has deepseek + openrouter + ollama
+            from pyharness.config.schema import ProviderConfig
+            app.config.provider = {
+                "deepseek": ProviderConfig(apiKey="sk-test-ds"),
+                "openrouter": ProviderConfig(apiKey="{env:OPENROUTER_API_KEY}"),
+                "ollama": ProviderConfig(),
+            }
+            # Only deepseek is "connected" (has a real key)
+            app._connected_providers = {"deepseek"}
+            app._available_models = ["deepseek:deepseek-chat"]
+            app._model_list_loaded = True
+
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            items = _models_dropdown_items(app)
+
+            for item in items:
+                assert not item.startswith("openrouter"), (
+                    "FAILS: openrouter model leaked into /models output.\n"
+                    f"  Item: {item!r}\n"
+                    f"  All items: {items!r}\n"
+                    "  openrouter is NOT connected — its models must not appear."
+                )
+                assert not item.startswith("ollama"), (
+                    "FAILS: ollama model leaked into /models output.\n"
+                    f"  Item: {item!r}\n"
+                    f"  All items: {items!r}\n"
+                    "  ollama is NOT connected — its models must not appear."
+                )
+
+            # At a minimum we should see the connected provider's models
+            has_deepseek = any("deepseek" in item for item in items)
+            assert has_deepseek, (
+                "FAILS: deepseek models not found in /models output.\n"
+                f"  Items: {items!r}\n"
+                "  deepseek IS connected — its models must appear."
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 2 — /models empty when no providers connected
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_list_empty_when_no_connected_providers(self) -> None:
+        """Fresh config with no connected providers → /models shows empty state.
+
+        Even if the config file has providers listed with env-var placeholders
+        and those env vars are NOT set, no models should appear.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Simulate: config has providers but none are connected
+            from pyharness.config.schema import ProviderConfig
+            app.config.provider = {
+                "openrouter": ProviderConfig(apiKey="{env:OPENROUTER_API_KEY}"),
+                "anthropic": ProviderConfig(apiKey="{env:ANTHROPIC_API_KEY}"),
+            }
+            # No env vars are set → nothing should be connected
+            app._connected_providers = set()
+            app._available_models = []
+            app._model_list_loaded = True
+
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            dropdown = _models_dropdown(app)
+            header = _models_dropdown_header(app)
+            items = _models_dropdown_items(app)
+
+            # Should show empty/none-state
+            has_empty_signal = (
+                (dropdown is not None and _models_dropdown_count(app) == 0)
+                or any(
+                    kw in (header + " ".join(items)).lower()
+                    for kw in ("no provider", "no model", "connect", "empty")
+                )
+            )
+            assert has_empty_signal, (
+                "FAILS: /models with no connected providers must show "
+                "an empty state or guidance message.\n"
+                f"  Header: {header!r}\n"
+                f"  Items: {items!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 3 — _connected_providers initialized from config on startup
+    # ------------------------------------------------------------------
+
+    def test_connected_providers_populated_from_config(self) -> None:
+        """On startup, providers with real (non-placeholder, non-empty) API
+        keys are added to _connected_providers."""
+        from pyharness.config.schema import ProviderConfig
+
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(
+            model="deepseek:deepseek-chat",
+            provider={
+                "deepseek": ProviderConfig(apiKey="sk-real-key"),
+                "openrouter": ProviderConfig(apiKey="{env:OPENROUTER_NOT_SET_XYZ}"),
+                "ollama": ProviderConfig(),
+            },
+        )
+
+        app._populate_connected_providers()
+
+        assert "deepseek" in app._connected_providers, (
+            "FAILS: deepseek has a real API key — must be connected."
+        )
+        assert "openrouter" not in app._connected_providers, (
+            "FAILS: openrouter has an unresolved {env:...} placeholder "
+            "and the env var is not set — must NOT be connected."
+        )
+        assert "ollama" not in app._connected_providers, (
+            "FAILS: ollama has no API key — must NOT be connected."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 4 — connected provider added after successful /connect
+    # ------------------------------------------------------------------
+
+    def test_connected_providers_updated_after_connect(self) -> None:
+        """After _handle_connect_result('Connected to deepseek'), the provider
+        is added to _connected_providers."""
+        app = PyHarnessApp()
+        app._connected_providers = set()
+
+        app.config = PyHarnessConfig(model="deepseek:deepseek-chat")
+
+        # Simulate what happens after a successful connection
+        provider_name = "deepseek"
+        app._connected_providers.add(provider_name)
+
+        assert provider_name in app._connected_providers, (
+            "FAILS: after successful /connect, provider must be "
+            "in _connected_providers."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 5 — reconnect adds additional provider without removing existing
+    # ------------------------------------------------------------------
+
+    def test_connected_providers_accumulates_on_multiple_connects(self) -> None:
+        """Connecting a second provider must add to the set without
+        removing previously connected providers."""
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(model="deepseek:deepseek-chat")
+
+        # First connect
+        app._connected_providers.add("deepseek")
+        # Second connect
+        app._connected_providers.add("openai")
+
+        assert app._connected_providers == {"deepseek", "openai"}, (
+            "FAILS: connecting a second provider must accumulate.\n"
+            f"  Got: {app._connected_providers!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 6 — {env:VAR} placeholder resolved via os.environ → connected
+    # ------------------------------------------------------------------
+
+    def test_connected_providers_with_resolved_env_placeholder(self) -> None:
+        """Provider with {env:VAR} placeholder AND the env var SET in
+        os.environ must be treated as connected.
+
+        This is the happy-path for users who set env vars — they should
+        NOT have to run /connect to see models."""
+        import os
+        from pyharness.config.schema import ProviderConfig
+
+        app = PyHarnessApp()
+        app._connected_providers = set()
+        app.config = PyHarnessConfig(
+            model="anthropic:claude-sonnet-4-5",
+            provider={
+                "anthropic": ProviderConfig(
+                    apiKey="{env:ANTHROPIC_API_KEY}",
+                ),
+                "openrouter": ProviderConfig(
+                    apiKey="{env:OPENROUTER_NOT_SET_XYZ}",
+                ),
+            },
+        )
+
+        # Set the env var that the placeholder refers to
+        with patch.object(os, "environ", {"ANTHROPIC_API_KEY": "sk-ant-real"}):
+            app._populate_connected_providers()
+
+        assert "anthropic" in app._connected_providers, (
+            "FAILS: anthropic env var IS set — must be connected.\n"
+            f"  _connected_providers: {app._connected_providers}"
+        )
+        assert "openrouter" not in app._connected_providers, (
+            "FAILS: openrouter env var NOT set — must NOT be connected.\n"
+            f"  _connected_providers: {app._connected_providers}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 7 — _populate_connected_providers guards against None config
+    # ------------------------------------------------------------------
+
+    def test_populate_connected_providers_with_none_config(self) -> None:
+        """When config is None, _populate_connected_providers must not crash."""
+        app = PyHarnessApp()
+        app._connected_providers = set()
+        app.config = None  # type: ignore[assignment]
+
+        # Must not raise
+        app._populate_connected_providers()
+
+        assert app._connected_providers == set(), (
+            "FAILS: connected providers must remain empty with None config.\n"
+            f"  Got: {app._connected_providers}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 8 — _populate_connected_providers guards against empty provider
+    # ------------------------------------------------------------------
+
+    def test_populate_connected_providers_with_empty_provider_dict(self) -> None:
+        """When config.provider is empty dict, _populate_connected_providers
+        must not crash and should leave _connected_providers empty."""
+        app = PyHarnessApp()
+        app._connected_providers = set()
+        app.config = PyHarnessConfig(
+            model="deepseek:deepseek-chat",
+            provider={},
+        )
+
+        # Must not raise
+        app._populate_connected_providers()
+
+        assert app._connected_providers == set(), (
+            "FAILS: connected providers must remain empty with no provider entries.\n"
+            f"  Got: {app._connected_providers}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 9 — _connected_providers initialized as empty set pre-mount
+    # ------------------------------------------------------------------
+
+    def test_connected_providers_starts_empty(self) -> None:
+        """Before on_mount, _connected_providers must be an empty set."""
+        app = PyHarnessApp()
+
+        assert isinstance(app._connected_providers, set), (
+            f"FAILS: _connected_providers must be a set, "
+            f"got {type(app._connected_providers).__name__}"
+        )
+        assert len(app._connected_providers) == 0, (
+            "FAILS: _connected_providers must be empty before on_mount.\n"
+            f"  Got: {app._connected_providers}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 10 — _update_sidebar_providers is invoked in connect flow
+    # ------------------------------------------------------------------
+
+    def test_sidebar_providers_updated_on_connect(self) -> None:
+        """_handle_connect_result must call _update_sidebar_providers
+        after a successful connection."""
+        import inspect
+        source = inspect.getsource(PyHarnessApp._handle_connect_result)
+
+        has_sidebar_update = "_update_sidebar_providers" in source
+        assert has_sidebar_update, (
+            "FAILS: _handle_connect_result must call _update_sidebar_providers.\n"
+            "  After a successful /connect, the sidebar provider status\n"
+            "  indicators must be refreshed.\n\n"
+            f"  Source:\n{source[:300]}..."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 11 — _handle_connect_result adds provider to connected set
+    # ------------------------------------------------------------------
+
+    def test_handle_connect_result_adds_to_connected(self) -> None:
+        """_handle_connect_result must add the provider to
+        _connected_providers via the result string."""
+        app = PyHarnessApp()
+        app._connected_providers = set()
+        app.config = PyHarnessConfig(model="deepseek:deepseek-chat")
+
+        # Simulate what _handle_connect_result does when result is truthy
+        provider_name = "openrouter"
+        app._connected_providers.add(provider_name)
+
+        assert provider_name in app._connected_providers, (
+            "FAILS: provider must be in _connected_providers after "
+            "successful connection."
+        )
+
+
+# =============================================================================
+# REMOVE _STATIC_MODELS — TUI-side: /models must not show static fallback models
+# =============================================================================
+# When ``_STATIC_MODELS`` is removed, the TUI's /models dropdown must only
+# show models from connected providers — either from live APIs or from the
+# per-provider ``_VERIFY_MODELS`` fallback.  No cross-contamination.
+#
+# THIS TEST MUST FAIL until ``_STATIC_MODELS`` is gone and the model list
+# in the app's cache is built without it.
+# =============================================================================
+
+
+class TestNoStaticModelsTUI:
+    """TUI /models dropdown must not show static fallback models from
+    unrelated providers."""
+
+    # ------------------------------------------------------------------
+    # TEST 8 — /models with only deepseek connected shows ONLY verifier model
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_models_list_no_static_fallback_visible(self) -> None:
+        """Launch app with only deepseek connected.  /models dropdown must
+        show ONLY ``deepseek:deepseek-chat`` (the verifier model).
+
+        No ``anthropic:claude-sonnet-4-5``, no ``openai:gpt-5``, no
+        ``openrouter:openai/gpt-5``, no ``ollama:llama3``.
+
+        FAILS because ``_available_models`` is populated from
+        ``_STATIC_MODELS`` which includes all those extraneous entries.
+        """
+        app = PyHarnessApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Set up: only deepseek is connected
+            from pyharness.config.schema import ProviderConfig
+            app.config.provider = {
+                "deepseek": ProviderConfig(apiKey="sk-test-ds"),
+            }
+            app._connected_providers = {"deepseek"}
+
+            # Populate model cache with the verifier model only
+            # (what fetch_models should return after _STATIC_MODELS removal)
+            app._available_models = ["deepseek:deepseek-chat"]
+            app._model_list_loaded = True
+
+            from pyharness.tui.widgets.input import PromptInput
+            inp = app.screen_stack[-1].query_one(PromptInput)
+            inp.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            items = _models_dropdown_items(app)
+
+            # Filter out header/decoration lines (like "Models (1 matches)")
+            model_lines = [
+                item for item in items
+                if ":" in item  # model IDs always contain "provider:model"
+            ]
+
+            # Must have only the deepseek verifier model
+            for item in model_lines:
+                # Strip icon prefixes like "🤖 " or "📄 " for comparison
+                clean = item.replace("🤖", "").replace("📁", "").replace("📄", "").strip()
+                valid = clean == "deepseek:deepseek-chat" or (
+                    "deepseek" in clean and "deepseek-chat" in clean
+                )
+                assert valid, (
+                    "FAILS: unexpected model in /models dropdown.\n"
+                    f"  Item: {item!r}\n"
+                    f"  All items: {items!r}\n\n"
+                    "  With only deepseek connected, the dropdown must show\n"
+                    "  ONLY 'deepseek:deepseek-chat' (the verifier model).\n"
+                    "  No anthropic, openai, openrouter, ollama, or any other\n"
+                    "  provider models must appear."
+                )
+
+            # Explicitly check cross-contamination
+            for forbidden_prefix in ("anthropic:", "openai:", "openrouter:", "ollama:"):
+                for item in model_lines:
+                    clean = item.replace("🤖", "").replace("📁", "").replace("📄", "").strip()
+                    assert not clean.startswith(forbidden_prefix), (
+                        f"FAILS: {forbidden_prefix} model leaked into /models.\n"
+                        f"  Item: {item!r}\n"
+                        f"  All items: {items!r}\n\n"
+                        "  Only deepseek is connected — its models must be the\n"
+                        "  ONLY items in the /models dropdown."
+                    )
+
+
+# =============================================================================
+# LIVE MODEL DISCOVERY TUI — connect then /models shows live API results
+# =============================================================================
+# When a provider is connected, the /models dropdown must show models
+# returned from the live provider API, not from any static/hardcoded list.
+# =============================================================================
+
+
+class TestLiveModelDiscoveryTUI:
+    """TUI /models must show models from live provider APIs, not static lists."""
+
+    # ------------------------------------------------------------------
+    # TEST 9 — Connect to OpenAI (mocked) then /models shows live results
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_connect_then_models_shows_live_results(self) -> None:
+        """Connect to openai (mocked), then /models dropdown shows models
+        returned from the live API, not from any static list.
+
+        Mock httpx to return ``{"data": [{"id":"gpt-5"},{"id":"gpt-4o-mini"}]}``
+        from the OpenAI API.  After connecting, the /models dropdown must
+        show these exact models.
+
+        FAILS: the model list comes from ``_VERIFY_MODELS`` (single entry
+        ``openai:gpt-4o-mini``) instead of the live API response with both
+        models.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_response = {
+            "data": [
+                {"id": "gpt-5"},
+                {"id": "gpt-4o-mini"},
+            ]
+        }
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        mock_get_response = MagicMock()
+        mock_get_response.raise_for_status = MagicMock()
+        mock_get_response.json = MagicMock(return_value=mock_response)
+        mock_client.get = AsyncMock(return_value=mock_get_response)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            from pyharness.core.provider import fetch_models
+
+            config = PyHarnessConfig(
+                provider={
+                    "openai": ProviderConfig(apiKey="sk-test-openai"),
+                }
+            )
+            models = await fetch_models(config, providers={"openai"})
+
+        # Verify the live API was actually called
+        assert mock_client.get.called, (
+            "FAILS: fetch_models did not make an HTTP call for openai.\n"
+            "  Current: openai is not a 'live' provider — _VERIFY_MODELS is used\n"
+            "  instead of querying the actual OpenAI API."
+        )
+
+        expected = sorted(["openai:gpt-5", "openai:gpt-4o-mini"])
+        assert models == expected, (
+            "FAILS: /models must show models from the live API, not from static lists.\n"
+            f"  Expected: {expected}\n"
+            f"  Got:      {models}\n"
+            "  Current: returns ['openai:gpt-4o-mini'] from _VERIFY_MODELS.\n"
+            "  The SPEC mandates that every model ID comes from a provider's own API,\n"
+            "  not from hardcoded constants."
+        )

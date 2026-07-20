@@ -259,11 +259,10 @@ class TestModelSelection:
     def test_status_bar_updates_on_model_change(self) -> None:
         """Status bar must reflect the current model."""
         app = PyHarnessApp()
-        source = inspect.getsource(app.action_switch_agent)
-        # action_switch_agent already updates the status bar — check that
-        # the model value comes from config (not a hardcoded string after fix)
-        assert "config.model" in source or "self.config" in source, (
-            "Status bar update should use config.model to reflect "
+        # update_status_bar() reads config.model internally — verify it exists
+        source = inspect.getsource(app.update_status_bar)
+        assert "self.config.model" in source or "config.model" in source, (
+            "update_status_bar() must read config.model to reflect "
             "the currently selected model, not a hardcoded value."
         )
 

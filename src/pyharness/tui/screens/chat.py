@@ -69,7 +69,7 @@ class ChatScreen(Screen):
             sidebar.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
             yield sidebar
 
-        status = StatusBar("build | anthropic:claude-sonnet-4-5 | 0 tokens", id="status-bar")
+        status = StatusBar("build |   |   | 0 tokens", id="status-bar")
         status.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
         yield status
 
@@ -99,8 +99,10 @@ class ChatScreen(Screen):
             "[#8b949e]! command — run shell | @file — attach file | "
             "/command — dispatch[/]"
         )
-        # Set initial status
-        self.update_status("build | loading... | 0 tokens")
+        # Set initial status (model/provider blank until configured)
+        model = self.app.config.model if self.app.config else ""
+        provider = model.split(":", 1)[0] if ":" in model else ""
+        self.update_status(f"build | {model} | {provider} | 0 tokens")
         # Auto-focus the input field so cursor starts in input
         with __import__("contextlib").suppress(Exception):
             self.query_one(PromptInput).focus()
@@ -197,7 +199,7 @@ class ChatScreen(Screen):
                     if len(cmd_parts) > 1:
                         model_id = cmd_parts[1]
                         chat.write(f"[#7ee787]Switched to model: {model_id}[/]")
-                        self.update_status(f"{self.app.current_agent} | {model_id} | 0 tokens")
+                        self.app.update_status_bar()
                         if hasattr(self.app, "switch_model"):
                             self.app.switch_model(model_id)
                     else:

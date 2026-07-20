@@ -17,7 +17,7 @@
 | Configuration | **pydantic** v2 + JSON5 | Type-safe config with schema validation; `pyharness.json` mirrors `opencode.json` semantics. |
 | Git integration | **GitPython** | Snapshot/restore for undo/redo; diff generation; branch-aware session tracking. |
 | MCP client | **langchain-mcp-adapters** + native **mcp** SDK | MCP servers as LangChain tools; stdio + HTTP transports; OAuth support. |
-| Session storage | **SQLite** (WAL mode) | Transactional system of record for messages, tool calls, token counts. LangGraph checkpoints for agent state. |
+| Session storage | **libsql** (Turso local/embedded) | Transactional system of record with concurrent writes (MVCC). Replaces SQLite WAL. LangGraph checkpoints for agent state. |
 | File watching | **watchfiles** | Efficient recursive file watcher; powers chat context auto-refresh. |
 | Logging | **structlog** | Structured from day one — agent loop traces, tool call records, provider latency. |
 | Async runtime | **asyncio** + **anyio** | Textual's native async loop; anyio for structured concurrency. |
@@ -46,39 +46,71 @@ litellm was the original choice. **Replaced by LangChain chat models** because:
 ## 2. Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    TUI Layer (Textual)                 │
-│  ┌──────────┐ ┌───────────┐ ┌─────────────────────┐  │
-│  │ ChatArea │ │ SidePanel │ │ StatusBar / CmdBar   │  │
-│  │ (scroll) │ │ (sessions,│ │ (model, agent,       │  │
-│  │          │ │  files,   │ │  token count, mode,  │  │
-│  │          │ │  tools,   │ │  memory indicator)   │  │
-│  │          │ │  memory)  │ │                      │  │
-│  └──────────┘ └───────────┘ └─────────────────────┘  │
-├──────────────────────────────────────────────────────┤
-│              Core Engine (LangGraph-powered)          │
-│  ┌──────────┐ ┌───────────┐ ┌─────────────────────┐  │
-│  │ Session  │ │ Agent     │ │ Tool Registry        │  │
-│  │ Manager  │ │ Graph     │ │ (builtin+mcp+custom) │  │
-│  └──────────┘ └───────────┘ └─────────────────────┘  │
-│  ┌──────────┐ ┌───────────┐ ┌─────────────────────┐  │
-│  │ Config   │ │ Permission│ │ Git Undo/Redo        │  │
-│  │ Loader   │ │ Middleware│ │ Middleware           │  │
-│  └──────────┘ └───────────┘ └─────────────────────┘  │
-├──────────────────────────────────────────────────────┤
-│              Memory Layer (MemPalace)                  │
-│  ┌──────────┐ ┌───────────┐ ┌─────────────────────┐  │
-│  │ Semantic │ │ Knowledge │ │ Agent                │  │
-│  │ Search   │ │ Graph     │ │ Diaries              │  │
-│  └──────────┘ └───────────┘ └─────────────────────┘  │
-├──────────────────────────────────────────────────────┤
-│                  Storage                              │
-│  ~/.config/pyharness/   — global config, agents,      │
-│                            skills, commands            │
-│  ~/.local/share/pyharness/ — sessions (SQLite), logs, │
-│                              cache, MemPalace index    │
-│  .pyharness/             — project-local overrides    │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                      TUI Layer (Textual)                          │
+│  ┌──────────┐ ┌───────────┐ ┌──────────────────────────────────┐ │
+│  │ ChatArea │ │ SidePanel │ │ StatusBar                        │ │
+│  │ (scroll) │ │ (sessions,│ │ {agent} | {model} | {provider} | │ │
+│  │          │ │  files,   │ │ {tokens}                         │ │
+│  │          │ │  tools,   │ │                                  │ │
+│  │          │ │  memory)  │ │                                  │ │
+│  └──────────┘ └───────────┘ └──────────────────────────────────┘ │
+├──────────────────────────────────────────────────────────────────┤
+│                Core Engine (LangGraph-powered)                    │
+│  ┌──────────┐ ┌───────────┐ ┌───────────────┐ ┌───────────────┐ │
+│  │ Session  │ │ Agent     │ │ Tool Registry │ │ AgentRunner   │ │
+│  │ Store    │ │ Graph     │ │ (builtin+mcp  │ │ (streaming,   │ │
+│  │ (SQLite) │ │           │ │  +custom)     │ │  token track) │ │
+│  └──────────┘ └───────────┘ └───────────────┘ └───────────────┘ │
+│  ┌──────────┐ ┌───────────┐ ┌───────────────┐ ┌───────────────┐ │
+│  │ Config   │ │ Permission│ │ Git Undo/Redo │ │ Shutdown      │ │
+│  │ Loader   │ │ Middleware│ │ Middleware    │ │ Handler       │ │
+│  │+Saver    │ │           │ │               │ │ (save+cleanup)│ │
+│  └──────────┘ └───────────┘ └───────────────┘ └───────────────┘ │
+├──────────────────────────────────────────────────────────────────┤
+│                Memory Layer (MemPalace)                            │
+│  ┌──────────┐ ┌───────────┐ ┌───────────────────────────────────┐ │
+│  │ Semantic │ │ Knowledge │ │ Agent                              │ │
+│  │ Search   │ │ Graph     │ │ Diaries                            │ │
+│  └──────────┘ └───────────┘ └───────────────────────────────────┘ │
+├──────────────────────────────────────────────────────────────────┤
+│                     Storage                                       │
+│  ~/.config/pyharness/   — global config, agents,                  │
+│                            skills, commands                       │
+│  ~/.local/share/pyharness/ — sessions (SQLite), logs,             │
+│                              cache, MemPalace index               │
+│  ~/.local/share/pyharness/current — current session pointer       │
+│  .pyharness/             — project-local overrides                │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 2.1 Application Lifecycle
+
+```
+┌─────────────────────────────────────────────────────┐
+│ STARTUP                                             │
+│ 1. load_config()          — pyharness.json          │
+│ 2. load last model        — config.model            │
+│ 3. open SessionStore      — sessions.db (WAL)       │
+│ 4. read current_session   — ~/.local/.../current    │
+│ 5a. if session exists     → load session            │
+│ 5b. if no session exists  → create new session      │
+│ 6. refresh model list     — for selected provider   │
+│ 7. verify provider status — test connect / ping     │
+├─────────────────────────────────────────────────────┤
+│ RUNTIME                                             │
+│ • track token usage (per message, per session)      │
+│ • save on: provider connect, model switch           │
+│ • SessionStore.add_message() on each exchange       │
+├─────────────────────────────────────────────────────┤
+│ SHUTDOWN                                            │
+│ 1. save current session  → SessionStore             │
+│ 2. save provider config  → save_config()            │
+│ 3. save selected model   → save_config()            │
+│ 4. write current_session → ~/.local/.../current     │
+│ 5. close SQLite          → store.close()            │
+│ 6. MemPalace diary write → (if enabled)             │
+└─────────────────────────────────────────────────────┘
 ```
 
 ### Entrypoint
@@ -254,6 +286,161 @@ litellm was the original choice. **Replaced by LangChain chat models** because:
 }
 ```
 
+### 4.5 Config Write-Back
+
+pyharness must write back configuration changes to disk so that provider
+keys, model selections, and other user preferences survive restarts.
+
+**`save_config()` function** (in `config/loader.py`):
+- Parses the existing config file with **json5** to preserve comments
+- Deep-merges the changes into the parsed dict
+- Writes back to `~/.config/pyharness/pyharness.json` using path
+  from the original load (respecting `PYHARNESS_CONFIG` env var)
+
+**Save triggers:**
+
+| Trigger | What is saved | Via |
+|---------|---------------|-----|
+| Provider connect | Provider API key | `save_config()` |
+| Model switch (`/model`) | `config.model` | `save_config()` |
+| Shutdown | Provider config + model + last session | `save_config()` |
+
+**Last model selected**: The `model` field in `pyharness.json` (§4.2)
+is the canonical store for the last-used model. It is read on startup
+and written on every model switch and on shutdown.
+
+### 4.6 Model Discovery — Live API, No Static Fallback
+
+**Design principle**: Every model ID pyharness knows about comes from
+the provider's own model-listing API at runtime. No static fallback.
+No hardcoded model list. No `_VERIFY_MODELS`. The provider's API is
+the single source of truth.
+
+**Provider model APIs**:
+
+| Provider | List Endpoint | Auth Header |
+|----------|--------------|-------------|
+| OpenAI | `GET https://api.openai.com/v1/models` | `Bearer $KEY` |
+| Anthropic | `GET https://api.anthropic.com/v1/models` | `x-api-key: $KEY` + `anthropic-version: 2023-06-01` |
+| DeepSeek | `GET https://api.deepseek.com/models` | `Bearer $KEY` |
+| Google Gemini | `GET https://generativelanguage.googleapis.com/v1beta/models?key=$KEY` | `x-goog-api-key: $KEY` |
+| Groq | `GET https://api.groq.com/openai/v1/models` | `Bearer $KEY` |
+| Mistral | `GET https://api.mistral.ai/v1/models` | `Bearer $KEY` |
+| Together | `GET https://api.together.ai/v1/models` | `Bearer $KEY` |
+| xAI/Grok | `GET https://api.x.ai/v1/models` | `Bearer $KEY` |
+| Perplexity | `GET https://api.perplexity.ai/v1/models` | NONE (no auth required) |
+| OpenRouter | `GET https://openrouter.ai/api/v1/models` | NONE |
+| Ollama | `GET localhost:11434/api/tags` | NONE |
+
+All OpenAI-compatible providers (DeepSeek, Groq, Mistral, Together,
+xAI) return the standard OpenAI model-list format:
+
+```json
+{"object": "list", "data": [{"id": "model-name", "created": 1234567890, "owned_by": "org"}]}
+```
+
+**Implementation**:
+
+`fetch_models()` queries each connected provider's `/v1/models` (or
+equivalent) endpoint. The base URL is resolved from the provider's
+default or `provider_config.baseUrl` if overridden. For `ollama`, the
+endpoint is `/api/tags`. For Google Gemini, the endpoint includes the
+API key as a query parameter.
+
+```python
+async def fetch_models(config, providers: set[str] | None = None) -> list[ModelInfo]:
+    """Query live model lists from every connected provider.
+
+    Returns a flat list of ModelInfo with provider + model_id for
+    each model advertised by each connected provider's own API.
+    Providers whose listing fails are skipped with a log warning.
+    """
+    models = []
+    for provider_id in (providers or config.connected_providers):
+        try:
+            provider_models = await _fetch_provider_models(provider_id, config)
+            models.extend(provider_models)
+        except ModelDiscoveryError as exc:
+            logger.warning("model_discovery_failed", provider=provider_id, error=str(exc))
+            # No fallback. Provider contributes zero models.
+    return models
+```
+
+**Connected provider definition**: A provider is "connected" when:
+
+1. **On startup** — the provider's `apiKey` in the config is:
+   - A non-empty, non-placeholder string (e.g. `"sk-abc123"`), OR
+   - An `{env:VAR}` placeholder whose referenced environment variable is set
+2. **At runtime** — `/connect` succeeds and `verify_connection()` returns `True`
+
+**Startup flow**:
+
+1. `load_config()` loads `pyharness.json` with all provider entries
+2. `_populate_connected_providers()` scans each provider's `apiKey`:
+   - Real keys → added to `_connected_providers`
+   - `{env:VAR}` placeholders → added only if `$VAR` is set
+   - Empty keys → skipped
+3. `refresh_models()` calls `fetch_models()` with `providers=self._connected_providers`
+4. Every model ID that appears in `/models` came from a live API call in step 3
+
+**Error handling**: If a provider's model listing fails (network
+error, auth failure, 404), the error is logged with `structlog`,
+the provider is marked as disconnected, and zero models are returned
+for that provider. No fallback to a hardcoded list. No `_VERIFY_MODELS`.
+The user sees a provider-specific error indicator in the TUI.
+
+**Caching**: Model lists are cached for the duration of the session.
+They are invalidated and re-fetched on `/connect` and on startup.
+
+**No static model list**: pyharness has no `_STATIC_MODELS`, no
+`_VERIFY_MODELS`, and no hardcoded model IDs anywhere. If no
+connected providers return models (all listing calls fail), the model
+list is empty and the user sees an appropriate prompt to connect a
+provider.
+
+### 4.7 Connection Verification via Model Discovery
+
+**Design principle**: Model discovery IS connection verification.
+There is no separate verifier model. No hardcoded test model. The act
+of successfully querying a provider's model list proves:
+
+1. The API key is valid
+2. The network is reachable
+3. The provider is operational
+
+**Implementation**: `verify_connection()` calls the provider's model
+listing endpoint. If the call returns a non-empty model list, the
+connection is verified AND models are discovered in a single step.
+
+```python
+async def verify_connection(provider_id: str, config: Config) -> bool:
+    """Verify provider connectivity by querying its model list.
+
+    Succeeds if the model list endpoint returns a valid response
+    with at least one model. Fails on network error, auth error,
+    or empty/invalid response.
+    """
+    try:
+        models = await _fetch_provider_models(provider_id, config)
+        return len(models) > 0
+    except ModelDiscoveryError:
+        return False
+```
+
+**Benefits over the old `_VERIFY_MODELS` approach**:
+
+| Old (`_VERIFY_MODELS`) | New (live discovery) |
+|------------------------|---------------------|
+| Hardcoded verifier model per provider | No hardcoded models anywhere |
+| Two code paths: verification + discovery | Single unified path |
+| Stale models (new provider models require code change) | Always up-to-date from provider API |
+| Connection test wasted an inference call | Connection test is free (list endpoint) |
+
+**Providers with no model list endpoint**: If a provider has no
+model-listing API, it cannot be used with pyharness. This is
+intentional — a provider without a discoverable model list has
+no path into the system.
+
 ---
 
 ## 5. Agent System
@@ -422,14 +609,135 @@ When MemPalace is installed, its 35 MCP tools are automatically available to the
 ### 7.1 Session lifecycle
 
 ```
-[Start] → active → idle → compacted → [archived]
-                  ↓
-              interrupted (user Esc)
-                  ↓
-              paused (can resume)
+                    ┌──────────┐
+            ┌──────►│  active  │◄──────────┐
+            │       └────┬─────┘           │
+            │            │                 │
+    [New] ──┤            ▼                 │
+            │       ┌─────────┐     ┌──────┴──────┐
+            │       │  idle   │────►│  compacted  │
+            │       └─────────┘     └──────┬──────┘
+            │                              │
+            │       ┌──────────────┐       │
+            └──────►│  archived    │◄──────┘
+                    └──────────────┘
+
+  ┌──────────────────────────────────────────────────────────┐
+  │ PERSISTENCE BOUNDARIES                                    │
+  │                                                          │
+  │  [New] → active    auto-create if no sessions exist      │
+  │  active → idle     after 30s of inactivity (auto)        │
+  │  idle → compacted  manual (/compact) or auto             │
+  │  any → archived    manual archive                        │
+  │  EXIT              save current session + token counts   │
+  │  STARTUP           load last session from current ptr    │
+  └──────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 Git-backed undo/redo
+Key persistence rules:
+- **Auto-create on first run**: If `SessionStore.list_sessions()` returns empty, a new session `sess-{ulid}` is created automatically
+- **Resume on restart**: The last active session ID is written to `~/.local/share/pyharness/current`. On startup, this is read and the session is loaded
+- **Save on changes**: Every message exchange increments `session.total_tokens` and `message.token_count`. The session row is updated in SQLite after each turn
+- **Save on exit**: See §7.5
+
+### 7.2 Session storage
+
+| Lifecycle layer | Location | What |
+|----------------|----------|------|
+| **Session DB** | `~/.local/share/pyharness/sessions/sessions.db` | All sessions: messages, token counts, metadata. libsql (Turso local/embedded) with MVCC concurrent writes |
+| **Current pointer** | `~/.local/share/pyharness/current` | Single line: the active session ID |
+| **LangGraph checkpoints** | In-memory (Phase 1) / SQLite (Phase 2+) | Agent graph state for resumption |
+| **Cross-session** | MemPalace (optional) | Semantic index, knowledge graph, agent diaries |
+
+SQLite schema (in `SessionStore`):
+- `sessions` table: id, title, project, model, agent, provider, status, total_tokens, created_at, updated_at
+- `messages` table: id, session_id, role, content, tool_name, tool_args, tool_result, timestamp, token_count
+
+### 7.3 Token tracking
+
+Token usage is tracked at two levels:
+
+| Level | Field | Updated |
+|-------|-------|---------|
+| **Per-message** | `Message.token_count` | After each assistant response, from LangGraph `on_chat_model_stream` `usage_metadata` |
+| **Per-session** | `Session.total_tokens` | Cumulative sum. Updated after each exchange in the session |
+
+Token capture:
+- `AgentRunner.run()` listens for `on_chat_model_stream` events
+- When the stream ends, LangGraph emits an `on_chat_model_end` event with `usage_metadata` containing `{input_tokens, output_tokens, total_tokens}`
+- The `AgentRunner` yields a `{"type": "usage", "data": {...}}` event
+- The TUI layer accumulates into the active `Session` and calls `SessionStore.update_session()`
+
+Token display:
+- **Status bar**: `build | anthropic:claude-sonnet-4-5 | anthropic | 4,231 tokens`
+- **Sidebar context**: Shows per-session token counts in the Sessions tab
+- **Session browser**: Column showing total tokens per session
+
+### 7.4 Session browser
+
+The Sessions tab in the sidebar lists all sessions from `SessionStore.list_sessions()`:
+
+```
+┌─ Sessions ─────────────────────┐
+│ ● Build REST API     12.4K tok │  ← active (●)
+│ ○ Fix auth bug        3.2K tok │  ← idle
+│ ○ Refactor config       842 tok│  ← idle
+│ ○ Archived: old impl          │  ← archived (dimmed)
+│                                │
+│ [New] [Switch] [Archive]       │
+└────────────────────────────────┘
+```
+
+Actions:
+- **Switch**: Update `current` pointer, save current session, load selected session
+- **Resume**: Same as switch — the session's message history is loaded into the chat
+- **Archive**: Set `status = "archived"`, remove from active list
+- **New**: Create with `SessionStore.create_session()`, write `current` pointer
+
+### 7.5 Auto-create on startup
+
+```python
+async def ensure_session(store: SessionStore) -> str:
+    """Return current session ID, creating one if none exists."""
+    # Read current pointer
+    current_path = _data_dir() / "current"
+    if current_path.exists():
+        session_id = current_path.read_text().strip()
+        try:
+            await store.get_session(session_id)
+            return session_id
+        except SessionNotFoundError:
+            pass  # Stale pointer — fall through
+
+    # No sessions at all → create
+    sessions = await store.list_sessions()
+    if not sessions:
+        session = await store.create_session(title="New Session")
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(session.id)
+        return session.id
+
+    # Sessions exist but no pointer → use most recent
+    latest = sessions[0]  # ordered by updated_at DESC
+    current_path.write_text(latest.id)
+    return latest.id
+```
+
+### 7.6 Session persistence on exit (§7.5)
+
+On shutdown (whether `action_quit`, `KeyboardInterrupt`, or SIGTERM):
+
+1. **Save current session**: `SessionStore.update_session(session)` writes final `total_tokens`, `updated_at`, `status = "idle"`
+2. **Save provider config**: `save_config()` writes provider API keys to `pyharness.json`
+3. **Save selected model**: `save_config()` writes `model` field to `pyharness.json`
+4. **Write current pointer**: `~/.local/share/pyharness/current` ← session ID
+5. **Close SessionStore**: `await store.close()` closes the SQLite connection
+6. **MemPalace diary**: If enabled, write agent diary entry for the session
+
+The shutdown flow is implemented as the `on_unmount` handler in the Textual `App`
+and as a signal handler for SIGINT/SIGTERM.
+
+### 7.7 Git-backed undo/redo
 
 Every agent action that modifies files creates a git commit on a hidden branch (`pyharness-session-{id}`). This is implemented as LangGraph middleware that intercepts file-modifying tool calls:
 
@@ -438,19 +746,7 @@ Every agent action that modifies files creates a git commit on a hidden branch (
 - **Journal file** maps commit SHAs to tool calls for precise undo/redo
 - **Non-git fallback**: when not in a git repo, uses file backup copies in `~/.local/share/pyharness/backups/`
 
-### 7.3 Session storage
-
-Dual-layer storage:
-
-| Layer | Technology | Stores |
-|-------|-----------|--------|
-| **System of record** | SQLite (WAL mode) | Messages, tool calls, token counts, git refs, metadata |
-| **Agent state** | LangGraph checkpointer | Graph state for resumption (streaming, checkpointing) |
-| **Cross-session** | MemPalace | Semantic index, knowledge graph, agent diaries |
-
-SQLite schema includes a `schema_version` table with Alembic migrations for forward compatibility.
-
-### 7.4 Compaction
+### 7.8 Compaction
 
 LangGraph provides context management middleware. Pyharness adds:
 - Auto-compaction when context approaches model limit
@@ -783,32 +1079,153 @@ class MemoryIndexer(MiddlewarePlugin):
 | `Ctrl+x r` | Redo |
 | `Ctrl+x t` | Theme list |
 | `Ctrl+x u` | Undo |
-| `Ctrl+x x` | Export session |
-| `Ctrl+t` | Toggle thinking visibility |
-| `Ctrl+o` | Toggle side panel |
 | `Ctrl+[/]` | Navigate sessions |
+| `Up/Down` | Navigate input history (bash-like) |
+| `Ctrl+R` | Search input history |
+| `Ctrl+Shift+C` | Copy selected output text |
+
+### 13.4 Input History (bash-like)
+
+The input widget maintains a command history like bash/readline.
+
+**History storage**: In-memory list per session, persisted to the `sessions.db` SQLite store so history survives restarts. Maximum 1000 entries per session.
+
+**Navigation**:
+- **Up Arrow** (`key_up`): When at the end of input, replaces the input buffer with the previous history entry. When already mid-history, moves one entry further back.
+- **Down Arrow** (`key_down`): When in history, moves one entry forward. When at the last history entry, restores the original (empty or unsent) input.
+- **Enter** (submit): Clears the "original input" save and appends the submitted text to history.
+
+**Search (Ctrl+R)**:
+- Pressing `Ctrl+R` opens a search overlay (modal or inline, like bash's `(reverse-i-search)`) above or replacing the input.
+- Typing filters the history entries by substring match (case-insensitive).
+- `Ctrl+R` again cycles to the next matching entry.
+- `Enter` selects the current match and fills it into the input.
+- `Escape` or `Ctrl+G` cancels the search and restores original input.
+
+**Persistence**:
+- Each submitted input is written to `sessions.db` immediately.
+- On session load, the history is populated from the database.
+- History is scoped to the current session ID.
+
+### 13.5 Output Selection & Copy
+
+The chat output area supports mouse text selection and copy.
+
+**Implementation**: Replace `RichLog` with Textual's `TextArea` widget in `read_only = True` mode. TextArea natively supports:
+- Mouse drag selection (click-drag to select text)
+- Ctrl+A to select all
+- Ctrl+Shift+C to copy selected text to clipboard (Ctrl+C is reserved for SIGINT)
+
+**Message rendering**: Messages are appended as plain text with a timestamp/role prefix. Rich markup is stripped before appending because TextArea does not render Rich markup. Message type prefixes:
+
+```
+[12:34] You: message text
+[12:34] Assistant: response text
+[12:34] Tool (bash): output
+```
+
+**Key handling**:
+- `Ctrl+Shift+C`: Copy selected text (terminal-level copy)
+- `Ctrl+A` in output: Select all text (TextArea built-in)
+- When the output TextArea is focused, `Escape` returns focus to the input widget
+- Tab behavior: Output area is in the tab order AFTER the input field, so Tab from input focuses the output for selection, next Tab wraps to sidebar
+
+**Scrolling**: TextArea supports mouse wheel scrolling and keyboard navigation (PageUp/Down, Home/End, Ctrl+Home/End). Auto-scroll enabled on new messages when scrolled to bottom.
+### 14.4 Status Bar
+
+The bottom-docked status bar provides persistent session context:
+
+**Format**: `{agent} | {model} | {provider} | {tokens}`
+
+Examples:
+```
+build | anthropic:claude-sonnet-4-5 | anthropic | 4,231 tokens
+plan  | openai:gpt-5               | openai    | 12,820 tokens
+build |                             |           | 0 tokens
+```
+
+**Rules**:
+- **agent**: Name of the current primary agent (build, plan, general, explore). Always present.
+- **model**: The full `provider:model-id` string. Blank if no model selected.
+- **provider**: Short provider name (anthropic, openai, groq, etc.). Blank if no model selected.
+- **tokens**: Formatted integer with commas (e.g., `4,231 tokens`). Starts at `0 tokens`. Updated in real time by capturing `usage_metadata` from LangGraph streaming events.
+
+**Token capture mechanism**:
+
+`AgentRunner.run()` streams LangGraph events via `astream_events`. LangChain's `on_chat_model_stream` events include `usage_metadata` on the final chunk:
+
+```python
+async for event in graph.astream_events(state, config, version="v2"):
+    if event["event"] == "on_chat_model_stream":
+        chunk = event["data"]["chunk"]
+        if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+            yield {
+                "type": "usage",
+                "data": {
+                    "input_tokens": chunk.usage_metadata.get("input_tokens", 0),
+                    "output_tokens": chunk.usage_metadata.get("output_tokens", 0),
+                    "total_tokens": chunk.usage_metadata.get("total_tokens", 0),
+                }
+            }
+```
+
+The TUI accumulates token counts into the active `Session` object and calls `SessionStore.update_session()`.
+The `StatusBar` widget listens for `TokenUpdate` messages and updates the display.
+
+**StatusBar widget** (`src/pyharness/tui/widgets/status.py`):
+
+```python
+class StatusBar(Static):
+    """Reactive status bar updated via Textual messages."""
+
+    def on_mount(self) -> None:
+        self.agent_name = "build"
+        self.model_name = ""
+        self.provider_name = ""
+        self.total_tokens = 0
+
+    def update_status(self) -> None:
+        model = self.model_name or ""
+        provider = self.provider_name or ""
+        tokens = f"{self.total_tokens:,} tokens" if self.total_tokens else "0 tokens"
+        self.update(f"{self.agent_name} | {model} | {provider} | {tokens}")
+```
+
+**Sidebar context section**: The sidebar's context area (top of side panel) also displays token counts alongside session title, model, and project info.
 
 ---
 
 ## 14. Implementation Phases (Revised)
 
 ### Phase 1 — Foundation (Weeks 1-6)
-**Goal**: Working TUI chat with LangGraph agent, tools, and memory
+**Goal**: Working TUI chat with LangGraph agent, tools, persistence, and memory
 
 - Project scaffolding (uv, pyproject.toml, CI/CD, linting)
 - Config loading & validation (pydantic, JSON5)
+- **Config write-back**: `save_config()` with JSONC comment preservation
 - LangGraph agent runtime (build agent, ReAct loop)
 - LangChain model integration (Anthropic + OpenAI)
+- **Live model discovery**: `fetch_models()` queries every connected
+  provider's model-listing API at runtime. Every model ID comes from
+  the provider's own `/v1/models` endpoint. No static fallback, no
+  `_VERIFY_MODELS`, no hardcoded model IDs. Connection verification
+  uses the model list endpoint directly (§4.6, §4.7)
 - Tool registry: bash, read, write, edit, grep, glob, task, todowrite
 - Basic TUI (chat input/output, no side panels)
-- SQLite session storage (WAL mode, schema + migrations)
+- **libsql session storage** (Turso local/embedded, concurrent writes via MVCC, schema + migrations)
+- **Session persistence**: auto-create, load/restore, shutdown save
+- **Current session pointer**: `~/.local/share/pyharness/current`
+- **Token tracking**: capture usage_metadata from LangGraph streams
+- **Status bar**: `{agent} | {model} | {provider} | {tokens}` format
+- **Provider persistence**: save API keys on connect/shutdown, load on startup
+- **Model persistence**: save last model to config, load on startup
 - MemPalace integration (auto-index, wake-up, agent tools, graceful degradation)
 - Permission middleware (HITL interrupts → TUI inline prompts)
 - Structured logging (structlog)
 - Mock LLM provider for testing
 
 ### Phase 2 — Full Agent System (Weeks 7-10)
-**Goal**: Multi-agent support, undo/redo, side panels
+**Goal**: Multi-agent support, undo/redo, session browser, side panels
 
 - Plan agent (read-only, LangGraph subgraph)
 - General subagent (task tool → isolated context)
@@ -817,6 +1234,7 @@ class MemoryIndexer(MiddlewarePlugin):
 - ! bash command injection
 - Git-backed undo/redo middleware
 - Side panels (Sessions, File Tree, Tools tabs)
+- **Session browser**: list, switch, resume, archive sessions
 - Command palette (Ctrl+p)
 - Slash commands system
 - MemPalace Memory tab in sidebar

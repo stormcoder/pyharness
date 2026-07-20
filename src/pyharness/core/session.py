@@ -1,7 +1,8 @@
-"""Session storage layer — SQLite-backed with WAL mode and async access.
+"""Session storage layer — libsql-backed (Turso local/embedded).
 
 Provides the system of record for messages, tool calls, token counts,
-git refs, and session metadata.
+git refs, and session metadata.  Uses ``libsql`` (the Turso-maintained
+SQLite fork) for concurrent-write support via MVCC.
 
 Schema version tracking enables forward-compatible migrations.
 """
@@ -14,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import aiosqlite
+import turso
 
 if TYPE_CHECKING:
     pass
@@ -139,111 +140,72 @@ def _short_ulid() -> str:
 
 
 class SessionStore:
-    """SQLite-backed session persistence with WAL mode and async access.
+    """libsql-backed session persistence with concurrent-write support.
 
     Usage::
 
         store = SessionStore(db_path)
-        await store.initialize()
-        session = await store.create_session(Session(title="My Session"))
-        await store.add_message(session.id, Message(role="user", content="Hi!"))
-        loaded = await store.get_session(session.id)
-        await store.close()
+        store.initialize()
+        session = store.create_session(Session(title="My Session"))
+        store.add_message(session.id, Message(role="user", content="Hi!"))
+        loaded = store.get_session(session.id)
+        store.close()
     """
 
     SCHEMA_VERSION = SCHEMA_VERSION
 
     def __init__(self, db_path: Path) -> None:
-        """Create a session store pointing at *db_path*.
-
-        Args:
-            db_path: Path to the SQLite database file.
-        """
         self.db_path = db_path
-        self._conn: aiosqlite.Connection | None = None
-
-    # -- connection management --------------------------------------------------
+        self._conn: turso.Connection | None = None
 
     @property
-    def _db(self) -> aiosqlite.Connection:
-        """Return the active connection; raises if not initialized."""
+    def _db(self) -> libsql.Connection:
         if self._conn is None:
             raise RuntimeError(
-                "SessionStore not initialized — call await store.initialize() first."
+                "SessionStore not initialized — call store.initialize() first."
             )
         return self._conn
 
-    async def initialize(self) -> None:
-        """Create tables, enable WAL, run migrations.
-
-        This must be called once before using the store.  It is idempotent.
-        """
+    def initialize(self) -> None:
+        """Create tables, run migrations.  Idempotent."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        self._conn = await aiosqlite.connect(str(self.db_path))
-        self._conn.row_factory = aiosqlite.Row
-
-        # Enable WAL + safety pragmas
+        self._conn = libsql.connect(str(self.db_path))
         for pragma in PRAGMAS:
-            await self._conn.execute(pragma)
-
-        # Create tables
-        await self._conn.execute(CREATE_SCHEMA_VERSION)
-        await self._conn.execute(CREATE_SESSIONS)
-        await self._conn.execute(CREATE_MESSAGES)
-
+            self._conn.execute(pragma)
+        self._conn.execute(CREATE_SCHEMA_VERSION)
+        self._conn.execute(CREATE_SESSIONS)
+        self._conn.execute(CREATE_MESSAGES)
         for idx in INDEXES:
-            await self._conn.execute(idx)
+            self._conn.execute(idx)
+        self._migrate()
+        self._conn.commit()
 
-        # Run any pending migrations
-        await self._migrate()
-
-        await self._conn.commit()
-
-    async def _migrate(self) -> None:
-        """Apply pending schema migrations in forward order."""
-        current = await self._current_version()
-
-        # Migration 1: bootstrap (only if schema_version row absent)
+    def _migrate(self) -> None:
+        current = self._current_version()
         if current == 0:
-            await self._conn.execute(
+            self._conn.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (1, ?)",
                 (_now_iso(),),
             )
-            await self._conn.commit()
-            current = 1
+            self._conn.commit()
 
-        # Future migrations go here, e.g.:
-        # if current == 1:
-        #     await self._conn.execute("ALTER TABLE ...")
-        #     await self._conn.execute(
-        #         "INSERT INTO schema_version (version, applied_at) VALUES (2, ?)",
-        #         (_now_iso(),),
-        #     )
-        #     current = 2
-
-    async def _current_version(self) -> int:
-        """Return the highest applied schema version, or 0 if none."""
+    def _current_version(self) -> int:
         try:
-            cursor = await self._db.execute(
-                "SELECT MAX(version) FROM schema_version"
-            )
-            row = await cursor.fetchone()
+            result = self._db.execute("SELECT MAX(version) FROM schema_version")
+            row = result.fetchone()
             return row[0] if row and row[0] is not None else 0
-        except aiosqlite.OperationalError:
+        except Exception:
             return 0
 
-    async def close(self) -> None:
-        """Close the database connection."""
+    def close(self) -> None:
         if self._conn is not None:
-            await self._conn.close()
+            self._conn.close()
             self._conn = None
 
     # -- CRUD: sessions ---------------------------------------------------------
 
-    async def create_session(self, session: Session) -> Session:
-        """Insert a new session and return it with the generated ID."""
-        await self._db.execute(
+    def create_session(self, session: Session) -> Session:
+        self._db.execute(
             """INSERT INTO sessions
                (id, title, project, model, agent, created_at, updated_at,
                 status, git_branch, total_tokens, metadata_json)
@@ -262,32 +224,28 @@ class SessionStore:
                 json.dumps(session.metadata),
             ),
         )
-        await self._db.commit()
+        self._db.commit()
         return session
 
-    async def get_session(self, session_id: str) -> Session | None:
+    def get_session(self, session_id: str) -> Session | None:
         """Load a session by ID, including all messages."""
-        cursor = await self._db.execute(
+        result = self._db.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
         )
-        row = await cursor.fetchone()
+        row = result.fetchone()
         if row is None:
             return None
 
         session = _row_to_session(row)
-        session.messages = await self._get_messages(session_id)
+        session.messages = self._get_messages(session_id)
         return session
 
-    async def list_sessions(
+    def list_sessions(
         self,
         project: str | None = None,
         status: str | None = None,
     ) -> list[Session]:
-        """List sessions, optionally filtered by project and/or status.
-
-        Returns sessions ordered by ``updated_at DESC`` (most recent first).
-        Messages are *not* loaded — use :meth:`get_session` for full details.
-        """
+        """List sessions, optionally filtered, ordered by ``updated_at DESC``."""
         query = "SELECT * FROM sessions WHERE 1 = 1"
         params: list[str] = []
 
@@ -300,14 +258,14 @@ class SessionStore:
 
         query += " ORDER BY updated_at DESC"
 
-        cursor = await self._db.execute(query, tuple(params))
-        rows = await cursor.fetchall()
+        result = self._db.execute(query, tuple(params))
+        rows = result.fetchall()
         return [_row_to_session(r) for r in rows]
 
-    async def update_session(self, session: Session) -> None:
-        """Update session metadata (title, status, tokens, branch, etc.)."""
+    def update_session(self, session: Session) -> None:
+        """Update session metadata."""
         session.updated_at = _now_iso()
-        await self._db.execute(
+        self._db.execute(
             """UPDATE sessions
                SET title = ?, project = ?, model = ?, agent = ?,
                    updated_at = ?, status = ?, git_branch = ?,
@@ -326,21 +284,21 @@ class SessionStore:
                 session.id,
             ),
         )
-        await self._db.commit()
+        self._db.commit()
 
-    async def delete_session(self, session_id: str) -> None:
-        """Soft-delete (archive) a session by setting its status to 'archived'."""
-        await self._db.execute(
+    def delete_session(self, session_id: str) -> None:
+        """Soft-delete (archive) a session."""
+        self._db.execute(
             "UPDATE sessions SET status = 'archived', updated_at = ? WHERE id = ?",
             (_now_iso(), session_id),
         )
-        await self._db.commit()
+        self._db.commit()
 
-    # -- CRUD: messages ----------------------------------------------------------
+    # -- CRUD: messages ---------------------------------------------------------
 
-    async def add_message(self, session_id: str, message: Message) -> None:
-        """Append a message to a session. Auto-updates ``updated_at``."""
-        await self._db.execute(
+    def add_message(self, session_id: str, message: Message) -> None:
+        """Append a message to a session."""
+        self._db.execute(
             """INSERT INTO messages
                (id, session_id, role, content, tool_name, tool_args_json,
                 tool_result, timestamp, token_count)
@@ -357,58 +315,57 @@ class SessionStore:
                 message.token_count,
             ),
         )
-        # Bump session timestamp + token total
-        await self._db.execute(
+        self._db.execute(
             """UPDATE sessions
                SET updated_at = ?,
                    total_tokens = total_tokens + ?
                WHERE id = ?""",
             (_now_iso(), message.token_count, session_id),
         )
-        await self._db.commit()
+        self._db.commit()
 
-    async def _get_messages(self, session_id: str) -> list[Message]:
+    def _get_messages(self, session_id: str) -> list[Message]:
         """Return all messages for a session, ordered by timestamp."""
-        cursor = await self._db.execute(
+        result = self._db.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,),
         )
-        rows = await cursor.fetchall()
+        rows = result.fetchall()
         return [_row_to_message(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
-# Row → dataclass helpers
+# Row → dataclass helpers  (row is a sqlite3.Row-like tuple)
 # ---------------------------------------------------------------------------
 
 
-def _row_to_session(row: aiosqlite.Row) -> Session:
+def _row_to_session(row: tuple) -> Session:
     """Convert a database row to a Session dataclass."""
     return Session(
-        id=row["id"],
-        title=row["title"],
-        project=row["project"],
-        model=row["model"],
-        agent=row["agent"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        status=row["status"],
-        git_branch=row["git_branch"],
-        total_tokens=row["total_tokens"],
-        metadata=json.loads(row["metadata_json"] or "{}"),
+        id=row[0],
+        title=row[1],
+        project=row[2],
+        model=row[3],
+        agent=row[4],
+        created_at=row[5],
+        updated_at=row[6],
+        status=row[7],
+        git_branch=row[8],
+        total_tokens=row[9],
+        metadata=json.loads(row[10] or "{}"),
     )
 
 
-def _row_to_message(row: aiosqlite.Row) -> Message:
+def _row_to_message(row: tuple) -> Message:
     """Convert a database row to a Message dataclass."""
-    tool_args_raw = row["tool_args_json"]
+    tool_args_raw = row[6]
     return Message(
-        id=row["id"],
-        role=row["role"],
-        content=row["content"],
-        tool_name=row["tool_name"],
+        id=row[0],
+        role=row[2],
+        content=row[3],
+        tool_name=row[4],
         tool_args=json.loads(tool_args_raw) if tool_args_raw else None,
-        tool_result=row["tool_result"],
-        timestamp=row["timestamp"],
-        token_count=row["token_count"],
+        tool_result=row[5],
+        timestamp=row[7],
+        token_count=row[8],
     )

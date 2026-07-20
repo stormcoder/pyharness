@@ -24,16 +24,16 @@ def tmp_db_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-async def store(tmp_db_path: Path):
+def store(tmp_db_path: Path):
     """Return an initialized SessionStore connected to a temp database."""
     from pyharness.core.session import SessionStore
 
     s = SessionStore(tmp_db_path)
-    await s.initialize()
+    s.initialize()
     try:
         yield s
     finally:
-        await s.close()
+        s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -66,16 +66,16 @@ def temp_session_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-async def async_store(temp_session_db: Path):
-    """Async session store initialised from *temp_session_db*."""
+def async_store(temp_session_db: Path):
+    """Session store initialised from *temp_session_db*."""
     from pyharness.core.session import SessionStore
 
     s = SessionStore(temp_session_db)
-    await s.initialize()
+    s.initialize()
     try:
         yield s
     finally:
-        await s.close()
+        s.close()
 
 
 # ---------------------------------------------------------------------------

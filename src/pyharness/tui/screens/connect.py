@@ -90,21 +90,50 @@ class ConnectScreen(ModalScreen[str | None]):
             provider = providers[idx]
             key = api_input.value.strip()
 
-            if key:
-                self._save_provider_key(provider, key)
-                self.dismiss(f"Connected to {provider}")
-            else:
+            if not key:
                 self.notify("Please enter an API key", severity="warning")
+                return
+
+            # 1. Save the actual key (not a placeholder)
+            self._save_provider_key(provider, key)
+
+            # 2. Verify the connection asynchronously via Textual worker
+            self._run_verification(provider, key)
         elif event.button.id == "btn-cancel":
             self.dismiss(None)
 
+    def _run_verification(self, provider: str, key: str) -> None:
+        """Run async connection verification via a Textual worker.
+
+        On success: dismiss with green message, update sidebar to green.
+        On failure: show error notification, update sidebar to red, keep
+            screen open for retry.
+        """
+
+        async def _verify() -> None:
+            connected = await self._verify_and_report(provider, key)
+            if connected:
+                self._update_sidebar_provider_status(provider, True)
+                self.dismiss(f"Connected to {provider}")
+            else:
+                self._update_sidebar_provider_status(provider, False)
+                self.notify(
+                    f"Connection failed for {provider}. "
+                    "Check your API key and try again.",
+                    severity="error",
+                    timeout=5,
+                )
+
+        self.run_worker(_verify(), exclusive=False)
+
     def _save_provider_key(self, provider: str, key: str) -> None:
-        """Save the provider API key to the user's pyharness config."""
+        """Save the provider API key to the user's pyharness config.
+
+        Writes to both the global config file on disk AND the in-memory
+        app config so the provider is immediately available.
+        """
         import json
         from pathlib import Path
-
-        # Map provider name to config key
-        env_var = f"{provider.upper()}_API_KEY".replace("-", "_")
 
         # Try to update global config
         config_path = Path.home() / ".config" / "pyharness" / "pyharness.json"
@@ -118,22 +147,65 @@ class ConnectScreen(ModalScreen[str | None]):
         else:
             config = {}
 
-        # Update provider section
+        # Update provider section — save the ACTUAL key, not a placeholder
         if "provider" not in config:
             config["provider"] = {}
         config["provider"][provider] = {
-            "apiKey": f"{{env:{env_var}}}",
+            "apiKey": key,
         }
 
-        # Write back
+        # Write back to disk
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
 
+        # Also update the in-memory app config so the provider is
+        # immediately visible without waiting for callback reload
+        app = self.app
+        if hasattr(app, "config"):
+            from pyharness.config.schema import ProviderConfig
+
+            app_config = app.config
+            if app_config.provider is None:
+                app_config.provider = {}
+            app_config.provider[provider] = ProviderConfig(apiKey=key)
+
         self.notify(
             f"[#7ee787]Provider {provider} configured![/]\n"
-            f"[#8b949e]Set env var: export {env_var}=<your-key>[/]\n"
-            f"[#8b949e]Or paste key directly in {config_path}[/]",
+            f"[#8b949e]Key saved to {config_path}[/]",
             severity="information",
-            timeout=5,
+            timeout=3,
         )
+
+    async def _verify_and_report(self, provider: str, key: str) -> bool:
+        """Verify the connection and return True if successful.
+
+        Called after saving the key.  Tests the key against the
+        provider API via :func:`verify_connection`.
+        """
+        from pyharness.core.provider import verify_connection
+
+        try:
+            return await verify_connection(provider, key)
+        except Exception:
+            return False
+
+    def _update_sidebar_provider_status(
+        self, provider: str, connected: bool
+    ) -> None:
+        """Update the sidebar's provider status indicator.
+
+        On success: 🟢 provider_name
+        On failure: 🔴 provider_name
+
+        Stores status on the app and pushes it to the sidebar widget.
+        """
+        try:
+            # Store on app so _handle_connect_result can also read it
+            self.app._provider_status[provider] = connected
+            # Push to sidebar if accessible (may be on the screen underneath)
+            app = self.app
+            if hasattr(app, "_update_sidebar_providers"):
+                app._update_sidebar_providers()
+        except Exception:
+            pass

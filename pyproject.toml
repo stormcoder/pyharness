@@ -37,6 +37,8 @@ dependencies = [
     "json5>=0.15.0",
     "fastapi>=0.139.0",
     "uvicorn>=0.51.0",
+    "langchain-deepseek>=1.1.0",
+    "pyturso>=0.7.0",
 ]
 
 [project.optional-dependencies]

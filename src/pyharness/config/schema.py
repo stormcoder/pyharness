@@ -167,6 +167,12 @@ class PyHarnessConfig(BaseModel):
 
     model_config = {"extra": "allow"}
 
+    # ---- Logging ----
+    log_level: Literal["ERROR", "INFO"] | None = Field(
+        default=None,
+        description="Log level: None (disabled), ERROR, or INFO",
+    )
+
     # ---- Model selection ----
     model: str = Field(
         default="anthropic:claude-sonnet-4-5",

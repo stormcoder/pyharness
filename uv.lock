@@ -1320,6 +1320,19 @@ wheels = [
 ]
 
 [[package]]
+name = "langchain-deepseek"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/15/f4/200792013d86406aa02aba8d1b536f8877a832372702189aef0c8c7a8329/langchain_deepseek-1.1.0.tar.gz", hash = "sha256:5ec8128cabae3d71366e2f297dea2153649be317a4be7f135cfcad1160523bf6", size = 138078, upload-time = "2026-06-03T19:07:11.887Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/1a/d18b7f985c35c635503a6cd426161933ffc7785f228d92447c63b026299a/langchain_deepseek-1.1.0-py3-none-any.whl", hash = "sha256:14813cb413a97a5cce95118da253cfd64dce50537b7381b7c5d0ecf11d2a7032", size = 10061, upload-time = "2026-06-03T19:07:11.04Z" },
+]
+
+[[package]]
 name = "langchain-mcp-adapters"
 version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2636,6 +2649,7 @@ dependencies = [
     { name = "json5" },
     { name = "langchain" },
     { name = "langchain-anthropic" },
+    { name = "langchain-deepseek" },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-ollama" },
     { name = "langchain-openai" },
@@ -2643,6 +2657,7 @@ dependencies = [
     { name = "langgraph" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pyturso" },
     { name = "structlog" },
     { name = "textual" },
     { name = "uvicorn" },
@@ -2676,6 +2691,7 @@ requires-dist = [
     { name = "json5", specifier = ">=0.15.0" },
     { name = "langchain", specifier = ">=0.3.0" },
     { name = "langchain-anthropic", specifier = ">=0.2.0" },
+    { name = "langchain-deepseek", specifier = ">=1.1.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.1.0" },
     { name = "langchain-ollama", specifier = ">=0.2.0" },
     { name = "langchain-openai", specifier = ">=0.2.0" },
@@ -2684,6 +2700,7 @@ requires-dist = [
     { name = "mempalace", marker = "extra == 'mempalace'", specifier = ">=0.1.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pyturso", specifier = ">=0.7.0" },
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "textual", specifier = ">=2.0.0" },
     { name = "uvicorn", specifier = ">=0.51.0" },
@@ -2834,6 +2851,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
+]
+
+[[package]]
+name = "pyturso"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5f/9d/c75ce150bf6a8afb4146fc95a52176de3e1fcb661bed547ccb4949a4edd4/pyturso-0.7.0.tar.gz", hash = "sha256:bf599d3416980c6989bd430f108c2515cb9e61e80acdc4abedbf83e93b8dcef8", size = 2847665, upload-time = "2026-07-14T09:18:44.504Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/44/f7b258a20e75ec4b037c934b6efdf74f16d2109328b73a9adc40b21e9cba/pyturso-0.7.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:ccaeb088663c90ea90d33beab29986d5591ed05637dd49cae97ebb946bdf6b9b", size = 8752762, upload-time = "2026-07-14T09:18:34.348Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/ca/ebe06f759494984a0db261f287b0d8d9bd7c533f118f3df636d605e04605/pyturso-0.7.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:d6207c7629448a2b1fc51bc554668ec39a04ccf02b410cbb8dd0a2a23614874e", size = 7757877, upload-time = "2026-07-14T09:18:37.077Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/65/d65256b9952b85676475e7f1b785d9bf837c9273a984e7e2837846b88677/pyturso-0.7.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8649b23b7329a8f92f76efb014e0ca03180b9b8a16705667fa5f3836cfdf02a4", size = 25969316, upload-time = "2026-07-14T09:18:39.483Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/f2/fdb8d7692b6c8468b8ef8151a79c68822214b42e569e678fc6fc57c2abd1/pyturso-0.7.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0d79040fa12992b7f4449f95a3d7ea248d8cffeebec52fd838fa263179f1f84c", size = 26483677, upload-time = "2026-07-14T09:18:42.242Z" },
 ]
 
 [[package]]

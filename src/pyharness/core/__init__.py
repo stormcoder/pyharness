@@ -9,6 +9,7 @@ from .provider import (
     list_available_models,
     list_available_providers,
     resolve_model,
+    verify_connection,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "list_available_models",
     "list_available_providers",
     "resolve_model",
+    "verify_connection",
 ]

@@ -309,3 +309,121 @@ def test_provider_config_with_values():
     assert prov.apiKey == "sk-123"
     assert prov.baseUrl == "https://api.anthropic.com"
     assert prov.options["timeout"] == 30000
+
+
+# ---------------------------------------------------------------------------
+# 8. Logging config (SPEC §10.5 — structured logging)
+# ---------------------------------------------------------------------------
+# The PyHarnessConfig must have a log_level field so that pyharness.json
+# users can set "log_level": "ERROR" and have it take effect.
+# Currently NO SUCH FIELD EXISTS — model_config = {"extra": "allow"}
+# silently discards extra keys.  ALL TESTS BELOW MUST FAIL.
+
+
+class TestLoggingConfig:
+    """Logging config must be a first-class field on PyHarnessConfig.
+
+    Currently ``PyHarnessConfig`` has no ``log_level`` field.  Setting
+    ``"log_level": "ERROR"`` in ``pyharness.json`` is silently accepted
+    (``extra="allow"``) but never read by ``setup_logging()``.  These
+    tests define the expected behavior and should FAIL until the field
+    is added.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST 1 — log_level field must exist in the schema model
+    # ------------------------------------------------------------------
+
+    def test_log_level_field_exists_in_schema(self) -> None:
+        """PyHarnessConfig must have a log_level field.
+
+        The field must be ``Optional[str]`` (or ``str | None``) with a
+        default value of ``None`` (meaning: use default INFO logging).
+
+        FAILS: ``PyHarnessConfig`` has no ``log_level`` field.  Extra
+        keys in ``pyharness.json`` are silently accepted by
+        ``model_config = {"extra": "allow"}`` but never read.
+        """
+        import inspect
+        from typing import get_type_hints
+
+        from pydantic.fields import FieldInfo
+
+        # Check that the field exists on the model class
+        fields: dict[str, FieldInfo] = PyHarnessConfig.model_fields
+        assert "log_level" in fields, (
+            "FAILS: PyHarnessConfig.model_fields does NOT contain 'log_level'.\n"
+            "  Expected: Optional[str] log_level = None\n"
+            f"  Current fields: {sorted(fields.keys())}\n"
+            "  Impact: 'log_level' in pyharness.json is silently discarded."
+        )
+
+        # Check the type is Optional[str]
+        hints = get_type_hints(PyHarnessConfig)
+        assert "log_level" in hints, (
+            "FAILS: PyHarnessConfig type hints don't include 'log_level'."
+        )
+
+        # Check default value is None
+        field = fields["log_level"]
+        assert field.default is None, (
+            f"FAILS: log_level default must be None, got {field.default!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # TEST 2 — log_level accepts valid values, rejecting invalid ones
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "value",
+        [None, "ERROR", "INFO"],
+    )
+    def test_log_level_accepts_valid_values(self, value: str | None) -> None:
+        """log_level must accept None, 'ERROR', and 'INFO'.
+
+        FAILS: field does not exist — validation cannot be tested.
+        """
+        data: dict[str, object] = {}
+        if value is not None:
+            data["log_level"] = value
+        config = PyHarnessConfig.model_validate(data)
+
+        if "log_level" in PyHarnessConfig.model_fields:
+            actual = config.log_level  # type: ignore[attr-defined]
+            assert actual == value, (
+                f"FAILS: log_level was {actual!r}, expected {value!r}"
+            )
+        else:
+            pytest.fail(
+                "FAILS: PyHarnessConfig has no 'log_level' field.\n"
+                "  model_validate() silently discards extra keys (extra='allow').\n"
+                "  Setting 'log_level' in pyharness.json has no effect."
+            )
+
+    # ------------------------------------------------------------------
+    # TEST 3 — invalid log_level values are rejected
+    # ------------------------------------------------------------------
+
+    def test_log_level_invalid_value_rejected(self) -> None:
+        """log_level='DEBUG' must raise ValidationError.
+
+        Only None, 'ERROR', and 'INFO' are valid values.
+
+        FAILS: field does not exist, so any value is silently accepted
+        as an "extra" field.
+        """
+        # First verify the field exists; if not, test cannot assert rejection
+        if "log_level" not in PyHarnessConfig.model_fields:
+            pytest.fail(
+                "FAILS: PyHarnessConfig has no 'log_level' field.\n"
+                "  Extra keys are silently accepted (extra='allow').\n"
+                "  'log_level': 'DEBUG' would be discarded, not rejected."
+            )
+
+        with pytest.raises(ValidationError) as exc_info:
+            PyHarnessConfig.model_validate({"log_level": "DEBUG"})
+        errors = exc_info.value.errors()
+        assert any("log_level" in str(e.get("loc", [])) for e in errors), (
+            f"FAILS: 'DEBUG' must be rejected as invalid log_level.\n"
+            f"  Got errors: {errors}"
+        )

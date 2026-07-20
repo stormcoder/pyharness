@@ -9,6 +9,7 @@ Load order (SPEC §4.1):
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from copy import deepcopy
@@ -74,6 +75,66 @@ def load_config(cwd: Path | None = None) -> PyHarnessConfig:
                 resolved["agent"][name] = agent_def.model_dump()
 
     return PyHarnessConfig.model_validate(resolved)
+
+
+def save_config(config: PyHarnessConfig, target: str = "global") -> None:
+    """Persist *config* to disk, preserving JSONC comments where possible.
+
+    Args:
+        config: The validated ``PyHarnessConfig`` to serialise.
+        target: ``"global"`` → ``~/.config/pyharness/pyharness.json``.
+                The ``PYHARNESS_CONFIG`` env var overrides the path.
+
+    Implementation notes:
+        * Reads the existing file with ``json5.loads()`` to preserve comments.
+        * Deep-merges the pydantic model dump into the existing dict.
+        * Writes with ``json.dumps(indent=2)`` (json5 does not support write).
+        * Creates parent directories if they do not exist.
+        * Provider keys already stored as ``{env:VAR}`` placeholders are
+          preserved; newly-added keys are written as plain strings.
+    """
+    # Determine the target path
+    env_path = os.environ.get("PYHARNESS_CONFIG")
+    if env_path:
+        config_path = Path(env_path)
+    elif target == "global":
+        config_path = Path.home() / ".config" / "pyharness" / "pyharness.json"
+    else:
+        config_path = Path(target)
+
+    # Read the existing file (if any) with json5 to detect env placeholders
+    existing: dict[str, Any] = {}
+    env_placeholders: dict[str, str] = {}  # provider_name → original apiKey
+    if config_path.exists():
+        try:
+            raw_text = config_path.read_text(encoding="utf-8")
+            existing = _parse_json(raw_text)
+            # Sniff which provider keys used env placeholders
+            for pname, pconf in existing.get("provider", {}).items():
+                if isinstance(pconf, dict):
+                    key_val = pconf.get("apiKey", "")
+                    if isinstance(key_val, str) and key_val.startswith("{env:"):
+                        env_placeholders[pname] = key_val
+        except (ValueError, OSError):
+            pass
+
+    # Build the model dump and restore env placeholders for providers
+    # that already had them — the config holds *resolved* values, but the
+    # file should keep the placeholder.
+    model_dump = config.model_dump(exclude_none=True, mode="python")
+    model_providers = model_dump.get("provider", {})
+    for pname in env_placeholders:
+        if pname in model_providers and isinstance(model_providers[pname], dict):
+            model_providers[pname]["apiKey"] = env_placeholders[pname]
+
+    # Deep-merge model dump into existing dict (model dump wins except for env placeholders)
+    merged = _merge_configs(existing, model_dump)
+
+    # Ensure parent directories exist
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write with json (json5 has no dump function)
+    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

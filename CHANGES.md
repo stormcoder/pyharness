@@ -4,6 +4,49 @@ All notable changes to pyharness will be documented in this file.
 
 ## [Unreleased]
 
+### Remove static model list — 2026-07-19
+
+#### Changed
+- **SPEC §4.6**: Removed all references to `_STATIC_MODELS`. Model discovery
+  now uses live API fetches (OpenRouter, Ollama) or single-model
+  `_VERIFY_MODELS` entries (all other providers). No static fallback.
+- **SPEC §4.6.1**: New section documenting the `_VERIFY_MODELS` map —
+  each non-live provider gets exactly one model ID, used for both
+  connection verification and model discovery.
+- **SPEC §14 Phase 1**: Updated to reflect live model discovery with
+  `_VERIFY_MODELS` fallback instead of static model list.
+- **`src/pyharness/core/provider.py`**: `_STATIC_MODELS` removed.
+  `fetch_models()` uses live API for `openrouter`/`ollama` and
+  `_VERIFY_MODELS` for all other providers. No static-list fallback
+  anywhere.
+- **Tests updated** to reflect new model discovery behavior.
+
+### Connected Provider Model Filtering — 2026-07-19
+
+#### Fixed
+- **Bug: `/models` showed models from ALL configured providers**, even ones the user never connected to. Root cause: `fetch_models()` used `set(config.provider.keys())` which included every provider in the config file regardless of connection status.
+- **`fetch_models()` now accepts an optional `providers` filter parameter** (`src/pyharness/core/provider.py`): When a `providers: set[str]` is passed, only models from those providers are returned.
+- **`PyHarnessApp` tracks `_connected_providers`** (`src/pyharness/tui/app.py`): New attribute and `_populate_connected_providers()` method determine which providers are actually connected on startup (non-empty, non-placeholder API keys, or resolved env-var placeholders).
+- **`refresh_models()` passes connected providers** to `fetch_models()`.
+- **`_handle_connect_result()` adds provider** to `_connected_providers` on successful `/connect`.
+- **Non-live provider fallback** (`src/pyharness/core/provider.py`): When a connected provider has no live model API (e.g. `deepseek`) and the static model list has no entries for it, `fetch_models()` now falls back to the verifier-model map (`_VERIFY_MODELS`) to ensure at least one well-known model ID is always available per connected provider.
+- **SPEC §4.6 added** documenting provider connection tracking and model discovery rules, including non-live provider fallback.
+- **`docs/persistence-plan.md` updated** with connected-provider tracking status and forward-reference to SPEC §4.6.
+
+#### Added
+- **Tests** (`tests/test_core/test_provider.py`): 3 tests in `TestConnectedProviderFiltering` — `test_fetch_models_only_connected_providers`, `test_fetch_models_empty_when_no_connected_providers`, `test_fetch_models_no_filter_includes_all_configured`.
+- **Tests** (`tests/test_tui/test_regression.py`): 5 tests in `TestConnectedProviderModelFilter` — `test_models_list_shows_only_connected_provider_models`, `test_models_list_empty_when_no_connected_providers`, `test_connected_providers_populated_from_config`, `test_connected_providers_updated_after_connect`, `test_connected_providers_accumulates_on_multiple_connects`.
+#### Audit & Fix (bubba, 2026-07-19)
+- **Bug found: Mixed live/non-live provider model loss**. When both a live provider (e.g. `openrouter`) and a non-live provider (e.g. `deepseek`) were connected, `fetch_models()` only returned models from the live fetch. Non-live providers silently got zero results because their fallback path was only entered when *no* live providers were active.
+- **Fix applied** (`src/pyharness/core/provider.py` lines 280-296): After the live fetch and filtering, the code now supplements results with static-fallback or verifier-model entries for any scope provider not covered by the live fetch — reusing the same logic already present in the all-non-live branch.
+- **Test expectations updated** (`tests/test_core/test_provider.py`): `test_fetch_models_from_openrouter_returns_list` and `test_fetch_models_with_ollama_configured` now use `sorted()` expectations to match the documented "sorted list" return contract.
+- **Verification**: All 26 provider tests pass; all 639 total tests pass (excluding pre-existing `libsql` import bug in `session.py`). Manual scenario testing confirms deepseek models appear alongside openrouter when both are connected.
+#### Audit (pm-devon, 2026-07-19)
+- Reviewed SPEC §4.6, CHANGES.md, persistence-plan.md, provider.py, app.py, connect.py, and all related tests.
+- **Implementation matches spec**: ✅. All four conditional branches verified (None → all, set() → empty, non-live → fallback, live → fetch+filter).
+- **Tests pass**: Connected provider filtering tests correctly guard against model leakage from unconnected providers.
+- **connect.py verification flow confirmed**: `_save_provider_key()` saves key then `_run_verification()` calls `verify_connection()` before dismissing — correct per SPEC §4.6.
+
 ### @ Autocomplete Dropdown Widget — 2026-07-16
 
 #### Changed

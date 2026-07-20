@@ -189,12 +189,22 @@ class PyHarnessApp(App):
     _available_models: list[str] = []
     _model_list_loaded: bool = False
 
+    # -- session ---------------------------------------------------------------
+    _session_store: object | None = None
+    _current_session_id: str | None = None
+    _session_token_count: int = 0
+
     _config_loaded_from_disk: bool = False
+
+    # -- connected providers tracking -------------------------------------------
+    _connected_providers: set[str] = set()
 
     def __init__(self) -> None:
         super().__init__()
         self.config: PyHarnessConfig = PyHarnessConfig()
         self._config_loaded_from_disk = False
+        self._provider_status: dict[str, bool] = {}
+        self._connected_providers: set[str] = set()
 
     def on_mount(self) -> None:
         """Load project config and push the chat screen on startup."""
@@ -202,22 +212,96 @@ class PyHarnessApp(App):
             cwd = Path.cwd()
             self.config = load_config(cwd)
             self._config_loaded_from_disk = True
+        # Wire logging from config
+        if self.config.log_level:
+            from pyharness.core.logging import setup_logging
+            setup_logging(level=self.config.log_level)
         self._load_keybinds()
+        # Populate _connected_providers from config: a provider is "connected"
+        # if it has a non-empty, non-placeholder apiKey.
+        self._populate_connected_providers()
         # Populate model cache from configured providers (live fetch, async).
-        # Falls back to empty when no provider is set up.
+        # Only models from connected providers are included.
         import asyncio
         asyncio.create_task(self.refresh_models())
+        # Initialize session store synchronously (libsql is not async)
+        self._init_session()
         self.push_screen(ChatScreen())
 
+    def _init_session(self) -> None:
+        """Initialize session store and load or create the current session."""
+        from pathlib import Path
+        from pyharness.core.session import Session, SessionStore
+
+        db_path = Path.home() / ".local" / "share" / "pyharness" / "sessions" / "sessions.db"
+        try:
+            self._session_store = SessionStore(db_path)
+            self._session_store.initialize()
+
+            current_ptr = db_path.parent / "current"
+            if current_ptr.exists():
+                sid = current_ptr.read_text().strip()
+                try:
+                    session = self._session_store.get_session(sid)
+                    if session is not None:
+                        self._current_session_id = session.id
+                        self._session_token_count = session.total_tokens
+                        return
+                except Exception:
+                    pass
+
+            session = Session(
+                title="New Session",
+                project=str(Path.cwd().name),
+                model=self.config.model if self.config else "",
+                agent="build",
+            )
+            self._session_store.create_session(session)
+            self._current_session_id = session.id
+        except Exception:
+            pass
+
+    def _save_state(self) -> None:
+        """Persist config and current-session pointer to disk."""
+        try:
+            from pyharness.config.loader import save_config
+            save_config(self.config)
+        except Exception:
+            pass
+        if self._current_session_id:
+            try:
+                from pathlib import Path
+                ptr = Path.home() / ".local" / "share" / "pyharness" / "sessions" / "current"
+                ptr.parent.mkdir(parents=True, exist_ok=True)
+                ptr.write_text(self._current_session_id)
+            except Exception:
+                pass
+
     async def refresh_models(self) -> None:
-        """Fetch available models from provider APIs and populate the cache."""
+        """Fetch available models from provider APIs and populate the cache.
+
+        Only models from *connected* providers are included — providers
+        in the config that were never connected are excluded.
+        """
         from pyharness.core.provider import fetch_models
 
         try:
-            self._available_models = await fetch_models(self.config)
+            self._available_models = await fetch_models(
+                self.config, providers=self._connected_providers
+            )
         except Exception:
             self._available_models = []
         self._model_list_loaded = True
+
+    def _update_sidebar_providers(self) -> None:
+        """Push current provider status to the sidebar widget."""
+        try:
+            screen = self.screen
+            sidebar = screen.query_one("Sidebar")
+            if hasattr(sidebar, "update_provider_status") and self._provider_status:
+                sidebar.update_provider_status(self._provider_status)
+        except Exception:
+            pass
 
     def _load_keybinds(self) -> None:
         """Load custom keybinds from tui.json, merging with defaults."""
@@ -244,6 +328,33 @@ class PyHarnessApp(App):
                 except Exception:
                     pass
 
+    def _populate_connected_providers(self) -> None:
+        """Populate ``_connected_providers`` from config on startup.
+
+        A provider is considered "connected" when:
+        - Its ``apiKey`` is a non-empty, non-placeholder string,
+          OR
+        - Its ``apiKey`` is an ``{env:VAR}`` placeholder and the
+          referenced environment variable is set.
+        """
+        import os
+
+        if self.config is None or not self.config.provider:
+            return
+
+        for pname, pconf in self.config.provider.items():
+            key = pconf.apiKey or ""
+            if not key:
+                continue
+            # Skip placeholders unless the env var is set
+            if key.startswith("{env:") and key.endswith("}"):
+                env_var = key[5:-1]  # strip "{env:" prefix and "}" suffix
+                if os.environ.get(env_var):
+                    self._connected_providers.add(pname)
+            else:
+                # Non-placeholder, non-empty key → connected
+                self._connected_providers.add(pname)
+
     @property
     def current_agent(self) -> str:
         """Return the currently selected agent name."""
@@ -254,26 +365,21 @@ class PyHarnessApp(App):
         self._current_agent_index = (self._current_agent_index + 1) % len(self.AGENTS)
         agent = self.AGENTS[self._current_agent_index]
         self.notify(f"Agent: {agent}", timeout=2)
-        # Update status bar on active screen (if running)
-        try:
-            screen = self.screen
-            if hasattr(screen, "update_status"):
-                model = self.config.model if self.config else "unknown"
-                screen.update_status(f"{agent} | {model} | 0 tokens")
-        except Exception:
-            pass
+        self.update_status_bar()
 
     def switch_model(self, model_id: str) -> None:
         """Switch the currently active model at runtime.
 
-        Updates the config model and refreshes the status bar.
+        Updates the config model, persists to disk, and refreshes the
+        status bar.
         """
         if self.config:
             self.config.model = model_id
+        self.update_status_bar()
+        # Persist model choice to config
         try:
-            screen = self.screen
-            if hasattr(screen, "update_status"):
-                screen.update_status(f"{self.current_agent} | {model_id} | 0 tokens")
+            from pyharness.config.loader import save_config
+            save_config(self.config)
         except Exception:
             pass
 
@@ -283,15 +389,52 @@ class PyHarnessApp(App):
         self.push_screen(ConnectScreen(), callback=self._handle_connect_result)
 
     def _handle_connect_result(self, result: str | None) -> None:
-        """Handle result from the connect dialog."""
+        """Handle result from the connect dialog.
+
+        Connection was already verified by ConnectScreen via
+        :func:`pyharness.core.provider.verify_connection` before
+        the dialog was dismissed — we only reach here on success.
+        """
         if result:
+            # Reload config to pick up newly saved provider
+            self.config = load_config(Path.cwd())
+            self._config_loaded_from_disk = True
+            # Parse provider name from "Connected to <provider>"
+            provider_name = result.replace("Connected to ", "")
+            self._provider_status[provider_name] = True
+            self._connected_providers.add(provider_name)
             self.notify(result, timeout=3)
-            # Refresh models after provider configuration changes
+            # Refresh models from THIS provider only — now that it's connected
             self.call_later(self.refresh_models)
+            # Update sidebar provider status
+            self._update_sidebar_providers()
 
     def action_quit(self) -> None:
-        """Exit the application cleanly."""
+        """Exit the application cleanly — save all state first."""
+        self._save_state()
         self.exit()
+
+    def on_unmount(self) -> None:
+        """Save all persistent state before the app exits."""
+        try:
+            from pyharness.config.loader import save_config
+            save_config(self.config)
+        except Exception:
+            pass
+
+    def update_status_bar(self, tokens: int | None = None) -> None:
+        """Push current agent/model/provider/tokens to the status bar."""
+        agent = self.current_agent
+        model = self.config.model if self.config else ""
+        provider = model.split(":", 1)[0] if ":" in model else ""
+        token_str = f"{tokens:,}" if tokens else "0"
+        text = f"{agent} | {model} | {provider} | {token_str} tokens"
+        try:
+            screen = self.screen
+            if hasattr(screen, "update_status"):
+                screen.update_status(text)
+        except Exception:
+            pass
 
     def action_new_session(self) -> None:
         """Create a new chat session."""

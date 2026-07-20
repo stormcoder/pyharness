@@ -1,7 +1,8 @@
-"""Sidebar with AGENTS.md, Context, and MCP sections — no tabs, no tools.
+"""Sidebar with AGENTS.md, Context, Providers, and MCP sections.
 
 Phase 2: Redesigned from tabbed panes to labeled sections in a vertical scroll.
 Phase 3: Added refresh methods for MCP status and AGENTS.md content.
+Phase 3: Added provider connection status section with 🟢/🔴 indicators.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from textual.widgets import Static
 
 
 class Sidebar(VerticalScroll):
-    """Project sidebar with AGENTS.md, context usage, and MCP server status.
+    """Project sidebar with AGENTS.md, context usage, provider status, and MCP server status.
 
     Toggle with ``Ctrl+o`` from :class:`~pyharness.tui.app.PyHarnessApp`.
     """
@@ -44,7 +45,17 @@ class Sidebar(VerticalScroll):
         # Divider
         yield Static("", id="divider-2")
 
-        # Section 3: MCP Servers
+        # Section 3: Providers
+        with Container(id="section-providers"):
+            yield Static("[bold #58a6ff]Providers[/]", id="providers-header")
+            yield Static(
+                "[#8b949e]No providers connected[/]", id="providers-status"
+            )
+
+        # Divider
+        yield Static("", id="divider-3")
+
+        # Section 4: MCP Servers
         with Container(id="section-mcp"):
             yield Static("[bold #58a6ff]MCP Servers[/]", id="mcp-header")
             yield Static(
@@ -88,6 +99,26 @@ class Sidebar(VerticalScroll):
             self.query_one("#agents-content", Static).update(
                 "[#8b949e]Run /init to create AGENTS.md for this project[/]"
             )
+
+    def update_provider_status(self, providers: dict[str, bool]) -> None:
+        """Update the provider section with connection status indicators.
+
+        Args:
+            providers: Mapping of ``{provider_name: is_connected}``.
+                ``True`` → 🟢 green (connected), ``False`` → 🔴 red (failed).
+        """
+        if not providers:
+            self.query_one("#providers-status", Static).update(
+                "[#8b949e]No providers connected[/]"
+            )
+            return
+        lines: list[str] = []
+        for name, connected in providers.items():
+            dot = "[#3fb950]🟢[/]" if connected else "[#f85149]🔴[/]"
+            lines.append(f"  {dot} [#c9d1d9]{name}[/]")
+        self.query_one("#providers-status", Static).update(
+            "\n".join(lines) if lines else "[#8b949e]No providers connected[/]"
+        )
 
     # ------------------------------------------------------------------
     # Section updaters
