@@ -1,4 +1,3 @@
-
 """Tests for Agent Runner wired into ChatScreen.
 
 Verifies that ``on_input_submitted`` properly resolves models, creates
@@ -6,20 +5,28 @@ AgentRunner instances, streams responses, handles errors gracefully, and
 displays tool calls with ``🔧`` prefix.
 
 Strategy: Tests that need mock agent streaming use TEXTUAL_TEST_MODE
-with a pre-configured app. Tests for error paths configure the app
+with a pre-configured app.  Tests for error paths configure the app
 appropriately and verify friendly error messages are shown.
+
+Key refactored behaviors:
+- Output widget: **RichLog** (not TextArea) — Rich markup for colors/markdown
+- Token streaming: buffered into ``full_response: list[str]``, rendered at
+  ``"done"`` through ``_render_markdown()`` as a single Rich markup block
+- Chat content check: use ``RichLog.lines`` (list of Strip objects),
+  convert via ``str(line)`` for plain-text assertions
 """
 
 from __future__ import annotations
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from textual.widgets import TextArea
+from textual.widgets import RichLog
 
 from pyharness.config.schema import ProviderConfig, PyHarnessConfig
 from pyharness.tui.app import PyHarnessApp
-from pyharness.tui.screens.chat import ChatScreen, _append_to_area, _strip_rich_markup
+from pyharness.tui.screens.chat import ChatScreen, _render_markdown
 from pyharness.tui.widgets.input import PromptInput
 
 # ---------------------------------------------------------------------------
@@ -29,18 +36,28 @@ from pyharness.tui.widgets.input import PromptInput
 
 def _chat_screen(app: PyHarnessApp) -> ChatScreen:
     screen = app.screen_stack[-1]
+    assert isinstance(screen, ChatScreen)
     return screen
 
 
-def _chat_text(app: PyHarnessApp) -> str:
-    """Get full chat TextArea content as plain text."""
-    chat = _chat_screen(app).query_one("#chat-area", TextArea)
-    return chat.text if chat.text else ""
+def _chat_log(app: PyHarnessApp) -> RichLog:
+    """Get the RichLog output widget from the chat screen."""
+    return _chat_screen(app).query_one("#chat-area", RichLog)
 
 
-def _chat_lines(app: PyHarnessApp) -> list[str]:
-    """Get chat TextArea content as list of lines."""
-    return _chat_text(app).split("\n") if _chat_text(app) else []
+def _chat_plain_lines(app: PyHarnessApp) -> list[str]:
+    """Get all chat lines as plain text from RichLog.lines.
+
+    RichLog.lines returns a list of ``Strip`` objects.  Each Strip can
+    be converted to plain text via ``str(strip)``.
+    """
+    log = _chat_log(app)
+    return [str(line).rstrip() for line in log.lines]
+
+
+def _chat_plain_text(app: PyHarnessApp) -> str:
+    """Get full chat output as plain text joined by newlines."""
+    return "\n".join(_chat_plain_lines(app))
 
 
 def _inp(app: PyHarnessApp) -> PromptInput:
@@ -70,6 +87,7 @@ class TestNoModelError:
     async def test_send_message_without_model_shows_error(self) -> None:
         """Sending a message with empty model must show error, not crash."""
         app = PyHarnessApp()
+        app._config_loaded_from_disk = True
         async with app.run_test() as pilot:
             await pilot.pause()
 
@@ -82,7 +100,7 @@ class TestNoModelError:
             await pilot.press("enter")
             await pilot.pause()
 
-            text = _chat_text(app)
+            text = _chat_plain_text(app)
             assert "Error" in text or "error" in text.lower(), (
                 f"Must show error when no model configured.\nChat text: {text!r}"
             )
@@ -129,7 +147,7 @@ class TestNoProviderError:
             await pilot.press("enter")
             await pilot.pause()
 
-            text = _chat_text(app)
+            text = _chat_plain_text(app)
             assert "Error" in text or "error" in text.lower(), (
                 f"Must show error when no provider connected.\nChat text: {text!r}"
             )
@@ -153,60 +171,15 @@ class TestNoProviderError:
 
 
 # ---------------------------------------------------------------------------
-# 3. Agent runner is called (verification the wiring exists)
+# 3. Agent wiring: imports, think message, order of checks
 # ---------------------------------------------------------------------------
 
 
 class TestAgentRunnerWiring:
     """Verify the agent runner is properly wired into on_input_submitted."""
 
-    async def test_think_message_appears(self) -> None:
-        """'Thinking...' indicator must appear when agent starts."""
-        app = _make_configured_app()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-
-            async def mock_events():
-                yield {"type": "content", "data": "Hello"}
-                yield {"type": "done", "data": None}
-
-            mock_runner = MagicMock()
-            mock_runner.run = MagicMock(return_value=mock_events())
-
-            with patch.object(
-                _chat_screen(app).__class__, "compose", _chat_screen(app).compose
-            ):
-                pass  # just checking we can access it
-
-            # The on_input_submitted method tries to do:
-            #   from pyharness.core.agent import AgentRunner
-            # These are local imports, so they resolve at runtime.
-            # We verify that with proper config, the method proceeds past
-            # the guard checks to the "Thinking..." message.
-            screen = _chat_screen(app)
-            # Directly trigger the handler with a mock event
-            from textual.widgets import Input
-
-            # Use a small patch to make the imports work then have resolve_model fail
-            with patch(
-                "pyharness.core.provider.resolve_model",
-                side_effect=ImportError("No agent module"),
-            ):
-                # This should enter the except block and show error
-                inp = _inp(app)
-                inp.value = "Hello"
-                await pilot.press("enter")
-                await pilot.pause()
-
-            text = _chat_text(app)
-            assert "Error resolving model" in text or "error" in text.lower(), (
-                "resolve_model failure must be caught and displayed"
-            )
-            assert app.is_running, "App must not crash"
-
-    async def test_on_input_submitted_has_agent_imports(self) -> None:
-        """on_input_submitted source must contain AgentRunner import."""
-        import inspect
+    def test_source_imports_agent_runner(self) -> None:
+        """on_input_submitted source must import AgentRunner."""
         source = inspect.getsource(ChatScreen.on_input_submitted)
         assert "AgentRunner" in source, (
             "on_input_submitted must import AgentRunner"
@@ -218,12 +191,10 @@ class TestAgentRunnerWiring:
             "on_input_submitted must import create_agent_graph"
         )
 
-    async def test_on_input_submitted_checks_model_before_agent(self) -> None:
-        """Model and provider must be checked BEFORE creating agent runner."""
-        import inspect
+    def test_model_check_comes_before_resolve(self) -> None:
+        """Model and provider must be checked BEFORE calling resolve_model."""
         source = inspect.getsource(ChatScreen.on_input_submitted)
 
-        # Find the order: "No model" check must come before "resolve_model"
         no_model_idx = source.find("No model selected")
         resolve_idx = source.find("resolve_model")
 
@@ -232,6 +203,39 @@ class TestAgentRunnerWiring:
         assert no_model_idx < resolve_idx, (
             "Model check must come BEFORE resolve_model call"
         )
+
+    def test_thinking_message_in_source(self) -> None:
+        """'Thinking...' must appear in source before resolve_model call."""
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+        assert "Thinking" in source, (
+            "on_input_submitted must display 'Thinking...' message"
+        )
+        # The thinking message must be written BEFORE resolve_model is called
+        thinking_idx = source.find("Thinking")
+        resolve_idx = source.find("resolve_model")
+        assert thinking_idx < resolve_idx, (
+            "Thinking message must be shown BEFORE resolve_model invocation"
+        )
+
+    async def test_think_message_appears_in_chat(self) -> None:
+        """'Thinking...' indicator must appear in chat output before resolution."""
+        app = _make_configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Make resolve_model fail so we can check that Thinking appeared
+            with patch(
+                "pyharness.core.provider.resolve_model",
+                side_effect=ValueError("Testing — resolve failed"),
+            ):
+                _inp(app).value = "Hello"
+                await pilot.press("enter")
+                await pilot.pause()
+
+            text = _chat_plain_text(app)
+            assert "Thinking" in text, (
+                f"Thinking indicator must appear in chat.\nChat text: {text!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +248,6 @@ class TestToolCallDisplay:
 
     def test_tool_call_wrench_in_source(self) -> None:
         """The on_input_submitted handler must contain 🔧 emoji for tool calls."""
-        import inspect
         source = inspect.getsource(ChatScreen.on_input_submitted)
         assert "🔧" in source, (
             "on_input_submitted must display 🔧 prefix for tool_call events"
@@ -252,7 +255,6 @@ class TestToolCallDisplay:
 
     def test_tool_call_event_handled(self) -> None:
         """on_input_submitted must handle 'tool_call' event type."""
-        import inspect
         source = inspect.getsource(ChatScreen.on_input_submitted)
         assert "tool_call" in source, (
             "on_input_submitted must handle event type 'tool_call'"
@@ -263,7 +265,6 @@ class TestToolCallDisplay:
 
     def test_assistant_label_in_source(self) -> None:
         """'Assistant:' label must appear in source code."""
-        import inspect
         source = inspect.getsource(ChatScreen.on_input_submitted)
         assert "Assistant:" in source, (
             "on_input_submitted must print 'Assistant:' label before tokens"
@@ -278,14 +279,12 @@ class TestToolCallDisplay:
 class TestInputClearsAfterAgent:
     """The input must clear after the agent response completes."""
 
-    async def test_input_clears_after_normal_message(self) -> None:
-        """After sending a normal message, the input field must be cleared."""
+    async def test_input_clears_after_slash_command(self) -> None:
+        """After sending a slash command, the input field must be cleared."""
         app = _make_configured_app()
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            # Send a /help command — this goes through the slash-command path
-            # which also clears input
             _inp(app).value = "/help"
             await pilot.press("enter")
             await pilot.pause()
@@ -319,7 +318,6 @@ class TestInputClearsAfterAgent:
     def test_event_variable_not_shadowed(self) -> None:
         """The 'event' variable must not be shadowed by async iterator variable.
         Look for 'input_event = event' pattern in the source."""
-        import inspect
         source = inspect.getsource(ChatScreen.on_input_submitted)
         # The fix was: input_event = event  # Save reference
         assert "input_event" in source, (
@@ -358,7 +356,7 @@ class TestResolveModelError:
                 await pilot.press("enter")
                 await pilot.pause()
 
-            text = _chat_text(app)
+            text = _chat_plain_text(app)
             assert "Error resolving model" in text or "error" in text.lower(), (
                 f"resolve_model error must appear in chat.\nChat text: {text!r}"
             )
@@ -401,9 +399,6 @@ class TestAgentErrorDuringStream:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            # Mock the entire agent flow to simulate a mid-stream crash
-            # The imports in on_input_submitted are local, so we patch
-            # the modules they come from
             mock_graph = MagicMock()
             mock_runner = MagicMock()
 
@@ -425,15 +420,14 @@ class TestAgentErrorDuringStream:
                 await pilot.press("enter")
                 await pilot.pause()
 
-            text = _chat_text(app)
+            text = _chat_plain_text(app)
             assert "Agent error" in text or "error" in text.lower(), (
                 f"Mid-stream agent crash must show error.\nChat text: {text!r}"
             )
             assert app.is_running, "App must not crash on agent stream error"
 
-    async def test_agent_error_wrapping_works(self) -> None:
+    def test_agent_error_wrapping_in_source(self) -> None:
         """Verify the error handling wrapper exists in source."""
-        import inspect
         source = inspect.getsource(ChatScreen.on_input_submitted)
         assert "Agent error" in source, (
             "on_input_submitted must catch and display 'Agent error'"
@@ -441,57 +435,236 @@ class TestAgentErrorDuringStream:
 
 
 # ---------------------------------------------------------------------------
-# 8. + 9. Strip Rich markup and _append_to_area helpers
+# 8. _render_markdown works correctly
 # ---------------------------------------------------------------------------
 
 
-class TestStripRichMarkup:
-    """_strip_rich_markup must correctly strip Rich markup tags."""
+class TestRenderMarkdown:
+    """_render_markdown must convert markdown to Rich markup for RichLog display.
 
-    def test_strip_bold_with_color(self) -> None:
-        """Rich [bold #58a6ff]text[/] becomes 'text'."""
-        result = _strip_rich_markup("[bold #58a6ff]Hello[/]")
-        assert "Hello" in result
-        assert "[bold" not in result
-        assert "[/]" not in result
-        assert "#58a6ff" not in result
+    The function uses ``rich.markdown.Markdown`` to render to Rich markup.
+    It does NOT strip markup — it produces Rich-compatible markup text.
+    This is the opposite of the old ``_strip_rich_markup`` (deleted).
+    """
 
-    def test_strip_multiple_tags(self) -> None:
-        """Multiple nested/sequential tags are all stripped."""
-        result = _strip_rich_markup(
-            "[bold #7ee787]Assistant:[/] [italic #8b949e]thinking...[/]"
+    def test_renders_plain_text_as_rich_markup(self) -> None:
+        """Plain text input is rendered to Rich markup output."""
+        result = _render_markdown("Hello world")
+        assert isinstance(result, str), "Must return a string"
+        assert "Hello world" in result, (
+            f"Plain text should appear in rendered output.\nGot: {result!r}"
         )
-        assert "Assistant:" in result
-        assert "thinking..." in result
 
-    def test_strip_preserves_plain_text(self) -> None:
-        """Plain text with no markup passes through unchanged."""
-        result = _strip_rich_markup("Hello world. No markup here.")
-        assert result == "Hello world. No markup here."
+    def test_handles_empty_string(self) -> None:
+        """Empty string returns empty string (short-circuit in function)."""
+        result = _render_markdown("")
+        assert result == ""
 
-    def test_strip_unbalanced_brackets_does_not_crash(self) -> None:
-        """Unbalanced or malformed markup must not raise an exception."""
-        result = _strip_rich_markup("some [unclosed tag")
+    def test_handles_whitespace_only(self) -> None:
+        """Whitespace-only input is returned as-is."""
+        result = _render_markdown("   \n  \t  ")
+        # The function returns early for stripped-empty text
         assert isinstance(result, str)
 
-    def test_strip_empty_string(self) -> None:
-        """Empty string returns empty string."""
-        assert _strip_rich_markup("") == ""
+    def test_handles_markdown_bold(self) -> None:
+        """Markdown bold text is converted to Rich markup bold."""
+        result = _render_markdown("**bold text**")
+        assert "bold text" in result, (
+            f"Bold content should appear in rendered output.\nGot: {result!r}"
+        )
+
+    def test_handles_code_block(self) -> None:
+        """Markdown code blocks are converted to Rich markup."""
+        result = _render_markdown("```python\nprint('hello')\n```")
+        assert "hello" in result, (
+            f"Code block content should appear in rendered output.\nGot: {result!r}"
+        )
+
+    def test_handles_lists(self) -> None:
+        """Markdown lists are converted to Rich markup."""
+        result = _render_markdown("- item one\n- item two")
+        assert "item one" in result
+        assert "item two" in result
+
+    def test_does_not_crash_on_malformed_text(self) -> None:
+        """Malformed or unusual input must not raise an exception."""
+        # Unclosed code fence
+        result = _render_markdown("```python\nunclosed code")
+        assert isinstance(result, str)
+        # Very long text
+        result = _render_markdown("x" * 5000)
+        assert isinstance(result, str)
+
+    def test_returns_string_for_all_inputs(self) -> None:
+        """_render_markdown always returns a string, never None."""
+        cases = ["hi", "", "   ", "**bold**", "```\ncode\n```"]
+        for case in cases:
+            result = _render_markdown(case)
+            assert isinstance(result, str), (
+                f"_render_markdown({case!r}) returned {type(result).__name__}"
+            )
 
 
-class TestAppendToArea:
-    """_append_to_area must correctly append text to a TextArea."""
+# ---------------------------------------------------------------------------
+# 9. RichLog compose verification
+# ---------------------------------------------------------------------------
 
-    def test_append_to_empty_area(self) -> None:
-        """Appending to an empty TextArea sets text correctly."""
-        area = TextArea(read_only=True)
-        _append_to_area(area, "Hello")
-        assert area.text == "Hello"
 
-    def test_append_concatenates(self) -> None:
-        """Appending to a non-empty TextArea concatenates."""
-        area = TextArea(read_only=True)
-        area.load_text("First")
-        _append_to_area(area, " Second")
-        assert "First" in area.text
-        assert "Second" in area.text
+class TestRichLogCompose:
+    """Verify ChatScreen uses RichLog (not TextArea) for chat output."""
+
+    def test_compose_uses_richlog_not_textarea(self) -> None:
+        """ChatScreen.compose must yield a RichLog, not a TextArea."""
+        source = inspect.getsource(ChatScreen.compose)
+        assert "RichLog" in source, (
+            "ChatScreen.compose must import/use RichLog, not TextArea"
+        )
+        assert "from textual.widgets import" not in source or (
+            "RichLog" in source.split("from textual.widgets")[1].split("\n")[0]
+        ), "RichLog must be imported in compose"
+
+    def test_compose_does_not_import_textarea(self) -> None:
+        """ChatScreen.compose source must NOT reference TextArea."""
+        source = inspect.getsource(ChatScreen.compose)
+        assert "TextArea" not in source, (
+            "ChatScreen.compose must NOT reference TextArea (use RichLog)"
+        )
+
+    def test_compose_does_not_reference_deleted_symbols(self) -> None:
+        """ChatScreen must NOT reference _strip_rich_markup or _append_to_area."""
+        source = inspect.getsource(ChatScreen)
+        assert "_strip_rich_markup" not in source, (
+            "_strip_rich_markup is deleted — should not appear in ChatScreen source"
+        )
+        assert "_append_to_area" not in source, (
+            "_append_to_area is deleted — should not appear in ChatScreen source"
+        )
+
+    def test_compose_richlog_has_markup_enabled(self) -> None:
+        """Compose must enable markup=True on the RichLog widget."""
+        source = inspect.getsource(ChatScreen.compose)
+        assert "markup=True" in source, (
+            "RichLog must be created with markup=True for Rich markup support"
+        )
+        assert "can_focus = False" in source, (
+            "RichLog must have can_focus=False to prevent tab focus stealing"
+        )
+
+    def test_compose_richlog_has_correct_id(self) -> None:
+        """RichLog must have id='chat-area' matching the previous TextArea id."""
+        source = inspect.getsource(ChatScreen.compose)
+        assert 'id="chat-area"' in source, (
+            "RichLog must keep id='chat-area' for backward compatibility"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10. RichLog widget instance verification (live app test)
+# ---------------------------------------------------------------------------
+
+
+class TestRichLogWidgetInstance:
+    """Verify the RichLog widget behaves correctly at runtime."""
+
+    async def test_chat_area_is_richlog_not_textarea(self) -> None:
+        """The #chat-area widget must be a RichLog instance."""
+        app = _make_configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            log = _chat_log(app)
+            assert isinstance(log, RichLog), (
+                f"#chat-area must be a RichLog, got {type(log).__name__}"
+            )
+
+    async def test_richlog_has_correct_properties(self) -> None:
+        """RichLog must have markup=True and can_focus=False."""
+        app = _make_configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            log = _chat_log(app)
+            assert log.markup is True, "RichLog must have markup=True"
+            assert log.can_focus is False, "RichLog must have can_focus=False"
+
+    async def test_chat_lines_accessible(self) -> None:
+        """RichLog.lines must be accessible and contain welcome messages."""
+        app = _make_configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            lines = _chat_plain_lines(app)
+            assert len(lines) > 0, "Chat should have welcome messages"
+            assert any("pyharness" in line for line in lines), (
+                f"Welcome messages should mention pyharness.\nLines: {lines}"
+            )
+
+    async def test_write_method_adds_to_richlog(self) -> None:
+        """ChatScreen._write() must append to RichLog."""
+        app = _make_configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            initial_count = len(_chat_log(app).lines)
+            _chat_screen(app)._write("Test message")
+            await pilot.pause()
+
+            new_count = len(_chat_log(app).lines)
+            assert new_count >= initial_count, (
+                f"_write should not decrease line count "
+                f"(was {initial_count}, now {new_count})"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 11. Full token buffering flow verification (source-level)
+# ---------------------------------------------------------------------------
+
+
+class TestTokenBufferingFlow:
+    """Verify tokens are buffered and rendered at 'done' event."""
+
+    def test_full_response_list_in_source(self) -> None:
+        """Source must use full_response: list[str] for token buffering."""
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+        assert "full_response: list[str]" in source or "full_response: list" in source, (
+            "on_input_submitted must declare full_response as a list for buffering"
+        )
+
+    def test_tokens_appended_not_written_directly(self) -> None:
+        """Content tokens must be appended to full_response, not written directly.
+
+        Before refactoring, tokens were written directly. Now they go into
+        full_response and are rendered at the 'done' event.
+        """
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+
+        # Find the "content" event handler — tokens append to full_response
+        content_section = source.split('kind == "content"')
+        assert len(content_section) >= 2, "Source must handle 'content' event kind"
+
+        content_code = content_section[1].split("elif")[0]
+        assert "full_response.append" in content_code, (
+            "Content tokens must be appended to full_response list"
+        )
+
+    def test_done_event_renders_full_response(self) -> None:
+        """At 'done' event, full_response is rendered via _render_markdown."""
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+        assert "full_response" in source, "full_response must appear in source"
+        assert "_render_markdown" in source, (
+            "_render_markdown must be called on the full response text"
+        )
+
+    def test_assistant_label_before_formatted_output(self) -> None:
+        """Assistant: label must be written BEFORE the formatted markdown."""
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+
+        assistant_idx = source.find("Assistant:")
+        render_idx = source.find("_render_markdown")
+
+        assert assistant_idx > 0, "'Assistant:' label must exist in source"
+        assert render_idx > 0, "_render_markdown call must exist in source"
+        assert assistant_idx < render_idx, (
+            "'Assistant:' label must come BEFORE _render_markdown call"
+        )

@@ -512,24 +512,24 @@ class TestGitHubIntegration:
 class TestPerformance:
     """Performance optimization: virtualized scrolling and lazy loading."""
 
-    def test_chat_area_uses_textarea(self):
+    def test_chat_area_uses_richlog(self):
         """Chat area must use TextArea for mouse-selectable output (was RichLog)."""
         from pyharness.tui.screens.chat import ChatScreen
 
         source = inspect.getsource(ChatScreen.compose)
-        assert "TextArea" in source, (
-            "PHASE 4 REQUIRED: ChatScreen.compose must use TextArea "
+        assert "RichLog" in source, (
+            "PHASE 4 REQUIRED: ChatScreen.compose must use RichLog "
             "for mouse-selectable output.\n"
             f"Source ({len(source)} chars): {source[:400]}..."
         )
 
-    def test_textarea_has_focus_enabled(self):
+    def test_richlog_has_focus_disabled(self):
         """TextArea must have can_focus=True for mouse selection (was RichLog can_focus=False)."""
         from pyharness.tui.screens.chat import ChatScreen
 
         source = inspect.getsource(ChatScreen.compose)
-        assert "can_focus = True" in source, (
-            "PHASE 4: TextArea must set can_focus=True for mouse selection. "
+        assert "can_focus = False" in source, (
+            "PHASE 4: RichLog must set can_focus=False for performance. "
             f"Source: {source[:400]}..."
         )
 

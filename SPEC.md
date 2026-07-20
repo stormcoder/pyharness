@@ -1118,30 +1118,30 @@ The input widget maintains a command history like bash/readline.
 - On session load, the history is populated from the database.
 - History is scoped to the current session ID.
 
-### 13.5 Output Selection & Copy
+### 13.5 Output Formatting & Copy
 
-The chat output area supports mouse text selection and copy.
+The chat output area renders responses with full Rich markup formatting.
 
-**Implementation**: Replace `RichLog` with Textual's `TextArea` widget in `read_only = True` mode. TextArea natively supports:
-- Mouse drag selection (click-drag to select text)
-- Ctrl+A to select all
-- Ctrl+Shift+C to copy selected text to clipboard (Ctrl+C is reserved for SIGINT)
+**Implementation**: Uses Textual's `RichLog` widget which natively supports:
+- Rich markup (colors, bold, italic, code blocks via `rich.markdown.Markdown`)
+- Auto-scroll on new messages
+- Virtualized scrolling for performance
 
-**Message rendering**: Messages are appended as plain text with a timestamp/role prefix. Rich markup is stripped before appending because TextArea does not render Rich markup. Message type prefixes:
+**Markdown rendering**: Model responses are accumulated as tokens, then the complete response is rendered through `rich.markdown.Markdown` → Rich markup string → `RichLog.write()`. This gives full markdown support:
+- `` ``` `` code blocks in a distinct background
+- `**bold**` and `*italic*` text
+- Bullet lists and numbered lists
+- Headers with proper sizing
+- Inline code with backtick styling
 
-```
-[12:34] You: message text
-[12:34] Assistant: response text
-[12:34] Tool (bash): output
-```
+**Copy support**: `Ctrl+Shift+C` extracts all chat text from RichLog as plain text and copies it to the system clipboard via `pyperclip`.
 
-**Key handling**:
-- `Ctrl+Shift+C`: Copy selected text (terminal-level copy)
-- `Ctrl+A` in output: Select all text (TextArea built-in)
-- When the output TextArea is focused, `Escape` returns focus to the input widget
-- Tab behavior: Output area is in the tab order AFTER the input field, so Tab from input focuses the output for selection, next Tab wraps to sidebar
-
-**Scrolling**: TextArea supports mouse wheel scrolling and keyboard navigation (PageUp/Down, Home/End, Ctrl+Home/End). Auto-scroll enabled on new messages when scrolled to bottom.
+**Keybinds**:
+| Key | Action |
+|-----|--------|
+| `Ctrl+Shift+C` | Copy entire chat content to clipboard |
+| `j`/`k` | Scroll chat (vim) |
+| `gg`/`G` | Top/bottom of chat |
 ### 14.4 Status Bar
 
 The bottom-docked status bar provides persistent session context:

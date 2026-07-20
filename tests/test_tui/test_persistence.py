@@ -554,3 +554,94 @@ def _status_text(app: PyHarnessApp) -> str:
         return str(bar.content) if bar.content else ""
     except Exception:
         return ""
+
+
+# =============================================================================
+# Sidebar provider status on startup
+# =============================================================================
+
+
+class TestSidebarProviderStatusOnStartup:
+    """Sidebar must show provider connection status on app startup.
+
+    BUG: ``_populate_connected_providers`` only populated
+    ``_connected_providers`` (a set) — it never populated
+    ``_provider_status`` (a dict).  The sidebar update guard at
+    ``_update_sidebar_providers`` checked ``if self._provider_status``
+    which was always falsy (empty dict), so the sidebar never showed
+    provider dots on startup.
+
+    FIX: ``_populate_connected_providers`` now also populates
+    ``_provider_status``, and ``on_mount`` calls
+    ``_update_sidebar_providers`` after ``push_screen``.
+    """
+
+    def test_populate_connected_providers_sets_provider_status(self):
+        """_populate_connected_providers must populate _provider_status dict."""
+        import inspect
+        from pyharness.tui.app import PyHarnessApp
+
+        source = inspect.getsource(PyHarnessApp._populate_connected_providers)
+        assert "_provider_status" in source, (
+            "_populate_connected_providers must assign to "
+            "self._provider_status"
+        )
+
+    def test_update_sidebar_providers_called_on_mount(self):
+        """on_mount must call _update_sidebar_providers after push_screen."""
+        import inspect
+        from pyharness.tui.app import PyHarnessApp
+
+        source = inspect.getsource(PyHarnessApp.on_mount)
+        assert "_update_sidebar_providers" in source, (
+            "on_mount must call self._update_sidebar_providers() "
+            "after push_screen"
+        )
+
+    def test_provider_status_populated_for_connected_provider(self):
+        """Provider with a real key must get _provider_status[provider]=True."""
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        with TemporaryDirectory() as td:
+            from unittest.mock import patch
+
+            tmp = Path(td)
+            # Set PYHARNESS_CONFIG so load_config reads from temp dir
+            config_path = tmp / "pyharness.json"
+            config_path.write_text('{"provider": {"test": {"apiKey": "sk-real"}}}')
+
+            with patch.dict("os.environ", {"PYHARNESS_CONFIG": str(config_path)}):
+                app = PyHarnessApp()
+                app.config = PyHarnessConfig(
+                    provider={"test": ProviderConfig(apiKey="sk-real")}
+                )
+                app._populate_connected_providers()
+
+                assert "test" in app._provider_status, (
+                    "Provider with real key must appear in _provider_status"
+                )
+                assert app._provider_status["test"] is True, (
+                    "Provider with real key must have status=True"
+                )
+
+    def test_provider_status_false_for_empty_key(self):
+        """Provider with empty apiKey must get _provider_status[provider]=False."""
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(
+            provider={"bad": ProviderConfig(apiKey="")}
+        )
+        app._populate_connected_providers()
+
+        assert "bad" in app._provider_status, (
+            "Provider with empty key must still appear in _provider_status"
+        )
+        assert app._provider_status["bad"] is False, (
+            "Provider with empty key must have status=False"
+        )

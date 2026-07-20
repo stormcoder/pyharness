@@ -234,6 +234,8 @@ class PyHarnessApp(App):
         # Initialize session store synchronously (libsql is not async)
         self._init_session()
         self.push_screen(ChatScreen())
+        # Sidebar now exists — push provider status
+        self._update_sidebar_providers()
 
     def _init_session(self) -> None:
         """Initialize session store and load or create the current session."""
@@ -336,13 +338,16 @@ class PyHarnessApp(App):
                     pass
 
     def _populate_connected_providers(self) -> None:
-        """Populate ``_connected_providers`` from config on startup.
+        """Populate ``_connected_providers`` and ``_provider_status`` from config.
 
         A provider is considered "connected" when:
         - Its ``apiKey`` is a non-empty, non-placeholder string,
           OR
         - Its ``apiKey`` is an ``{env:VAR}`` placeholder and the
           referenced environment variable is set.
+
+        Also sets ``_provider_status`` so the sidebar reflects
+        connection state on startup.
         """
         import os
 
@@ -352,15 +357,20 @@ class PyHarnessApp(App):
         for pname, pconf in self.config.provider.items():
             key = pconf.apiKey or ""
             if not key:
+                self._provider_status[pname] = False
                 continue
             # Skip placeholders unless the env var is set
             if key.startswith("{env:") and key.endswith("}"):
                 env_var = key[5:-1]  # strip "{env:" prefix and "}" suffix
                 if os.environ.get(env_var):
                     self._connected_providers.add(pname)
+                    self._provider_status[pname] = True
+                else:
+                    self._provider_status[pname] = False
             else:
                 # Non-placeholder, non-empty key → connected
                 self._connected_providers.add(pname)
+                self._provider_status[pname] = True
 
     @property
     def current_agent(self) -> str:

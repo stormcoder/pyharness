@@ -10,43 +10,47 @@ import asyncio
 import re
 from pathlib import Path
 
-from rich.text import Text as RichText
+from rich.markdown import Markdown as RichMarkdown
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.events import Key
 from textual.screen import Screen
-from textual.widgets import Input, TextArea
-
-
-def _strip_rich_markup(text: str) -> str:
-    """Convert Rich markup to plain text.
-
-    Uses Rich's own parser for correctness — literal brackets
-    (e.g. in code snippets) are preserved, only markup tags are
-    stripped.
-    """
-    try:
-        return RichText.from_markup(text).plain
-    except Exception:
-        # If Rich can't parse the markup (e.g. unbalanced tags),
-        # strip brackets heuristically
-        return re.sub(r"\[/?[^\]]*\]", "", text)
-
-
-def _append_to_area(area: TextArea, text: str) -> None:
-    """Append plain text to a read-only TextArea and scroll to the end."""
-    current = area.text
-    new_text = current + text if current else text
-    area.load_text(new_text)
-    area.move_cursor(area.document.end, select=False)
+from textual.widgets import Input, RichLog
 
 from pyharness.tui.widgets.input import PromptInput
 from pyharness.tui.widgets.sidebar import Sidebar
 from pyharness.tui.widgets.status import StatusBar
 
 
+def _render_markdown(text: str) -> str:
+    """Render markdown-like text to Rich markup for RichLog display.
+
+    Uses Rich's Markdown renderer for code blocks, bold, lists, etc.
+    Falls back to plain text if Rich can't parse it.
+    """
+    if not text.strip():
+        return text
+    try:
+        md = RichMarkdown(text)
+        # Rich renders to an internal format; we convert via the
+        # console protocol to get back Rich markup text.
+        from io import StringIO
+
+        from rich.console import Console
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=False, width=100)
+        console.print(md)
+        return buf.getvalue().rstrip()
+    except Exception:
+        return text
+
+
 class ChatScreen(Screen):
     """Main chat screen with scrollable message history, text input, and sidebar."""
+
+    BINDINGS = [
+        ("ctrl+shift+c", "copy_chat", "Copy Chat"),
+    ]
 
     COMMANDS: dict[str, str] = {
         "/new": "Start a new session",
@@ -81,9 +85,9 @@ class ChatScreen(Screen):
         with Horizontal():
             # Main chat area
             with Container(id="chat-container"):
-                area = TextArea(id="chat-area", read_only=True, show_line_numbers=False)
-                area.can_focus = True
-                yield area
+                rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
+                rich_log.can_focus = False  # CRITICAL: prevents tab focus stealing
+                yield rich_log
                 with Container(id="input-area"):
                     yield PromptInput(
                         placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
@@ -98,25 +102,38 @@ class ChatScreen(Screen):
         yield status
 
     def _write(self, text: str) -> None:
-        """Append text to the chat output area, stripping Rich markup.
+        """Append Rich markup text to the chat output area.
 
-        All chat messages flow through this method so the TextArea
-        stays plain-text (for mouse selection) while preserving
-        Rich rendering in user-defined message widgets.
+        All chat messages flow through this method so Rich markup
+        (colors, bold, etc.) is rendered correctly by RichLog.
         """
         try:
-            area = self.query_one("#chat-area", TextArea)
-            # Strip Rich markup for plain-text TextArea display
-            plain = _strip_rich_markup(text)
-            # Strip leading newlines for cleaner display
-            stripped = plain.lstrip("\n")
-            if stripped:
-                # Prepend newline if area already has content
-                if area.text:
-                    stripped = "\n" + stripped
-                _append_to_area(area, stripped)
+            area = self.query_one("#chat-area", RichLog)
+            area.write(text)
         except Exception:
             pass
+
+    def action_copy_chat(self) -> None:
+        """Copy all chat text to the system clipboard.
+
+        Extracts plain text from the RichLog area (strips Rich markup)
+        and copies it via Textual's built-in clipboard support.
+        """
+        try:
+            area = self.query_one("#chat-area", RichLog)
+            # Extract plain text from RichLog renderables
+            lines: list[str] = []
+            for strip in area.lines:
+                text = "".join(segment.text for segment in strip)
+                lines.append(text)
+            plain = "\n".join(lines)
+            if plain.strip():
+                self.app.copy_to_clipboard(plain)
+                self.notify("Chat copied to clipboard", timeout=2)
+            else:
+                self.notify("Nothing to copy", timeout=2, severity="warning")
+        except Exception:
+            self.notify("Copy failed", timeout=2, severity="error")
 
     def update_status(self, text: str) -> None:
         """Update the status bar text."""
@@ -330,7 +347,9 @@ class ChatScreen(Screen):
         graph = create_agent_graph(model, tools)
         runner = AgentRunner(graph, session_id, agent_name, model_id)
 
-        # Stream agent events into the chat output
+        # Stream agent events into the chat output.
+        # Tokens are buffered and rendered as formatted markdown when the
+        # agent finishes — this prevents raw token soup in the display.
         full_response: list[str] = []
         tool_block_active = False
         input_event = event  # Save reference before shadowing in loop
@@ -338,11 +357,8 @@ class ChatScreen(Screen):
             async for ag_event in runner.run(user_msg):
                 kind = ag_event["type"]
                 if kind == "content":
-                    if not full_response:
-                        self._write("[bold #7ee787]Assistant:[/] ")
                     token = ag_event["data"]
                     full_response.append(token)
-                    self._write(token)
                     tool_block_active = False
                 elif kind == "tool_call":
                     name = ag_event["data"]["name"]
@@ -355,6 +371,12 @@ class ChatScreen(Screen):
                 elif kind == "done":
                     if tool_block_active:
                         tool_block_active = False
+                    # Render the full response as formatted markdown
+                    if full_response:
+                        response_text = "".join(full_response)
+                        self._write("\n[bold #7ee787]Assistant:[/]")
+                        formatted = _render_markdown(response_text)
+                        self._write(formatted)
         except Exception as exc:
             self._write(f"\n[#f85149]Agent error:[/] {exc}")
 

@@ -154,8 +154,10 @@ class PromptInput(Input):
                 self._search_mode = False
                 self._search_matches = []
                 self._search_query = ""
-                event.stop()
-                event.prevent_default()
+                # DO NOT stop/prevent_default — let Enter propagate so
+                # ChatScreen.on_input_submitted fires and submits the
+                # matched history entry.  This matches bash behavior
+                # where Enter in reverse-search executes the match.
                 return
             # Any other key in search mode — handled in watch_value
             return
