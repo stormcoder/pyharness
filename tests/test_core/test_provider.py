@@ -1636,7 +1636,7 @@ class TestLiveModelDiscovery:
             "https://api.openai.com/v1/models": {
                 "data": [{"id": "gpt-5"}, {"id": "gpt-4o-mini"}]
             },
-            "https://api.deepseek.com/models": {
+            "https://api.deepseek.com/v1/models": {
                 "data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]
             },
             "https://api.anthropic.com/v1/models": {

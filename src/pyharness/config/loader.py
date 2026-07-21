@@ -130,6 +130,13 @@ def save_config(config: PyHarnessConfig, target: str = "global") -> None:
     # Deep-merge model dump into existing dict (model dump wins except for env placeholders)
     merged = _merge_configs(existing, model_dump)
 
+    # Provider section is a REPLACE, not a merge: the in-memory config is
+    # the canonical source of truth for which providers exist.  Without
+    # this, stale provider entries survive every save_config() call and
+    # can never be removed.
+    if "provider" in model_dump and isinstance(model_dump["provider"], dict):
+        merged["provider"] = model_dump["provider"]
+
     # Ensure parent directories exist
     config_path.parent.mkdir(parents=True, exist_ok=True)
 

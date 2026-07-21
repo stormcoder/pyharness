@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pyharness.config.loader import save_config
 from pyharness.config.schema import (
     MODEL_STRING_PATTERN,
     ProviderConfig,
@@ -31,6 +32,7 @@ from pyharness.config.schema import (
 )
 from pyharness.tui.app import PyHarnessApp
 from pyharness.tui.screens.connect import ConnectScreen
+from pyharness.tui.widgets.sidebar import Sidebar
 
 
 # =============================================================================
@@ -1049,8 +1051,9 @@ class TestProviderStatusPopulatedCorrectly:
 
     def test_placeholder_env_set_status_true(self) -> None:
         """Provider with ``apiKey: \"{env:VAR}\"`` where the env var IS
-        set must get ``_provider_status[name] = True`` from populate,
-        but is NOT added to ``_connected_providers`` (that happens
+        set is left UNSET in ``_provider_status`` after populate
+        (no ``True``, no ``False`` — not present at all).
+        It is NOT added to ``_connected_providers`` (that happens
         later, asynchronously in refresh_models())."""
         import os
         from pyharness.config.schema import ProviderConfig, PyHarnessConfig
@@ -1068,10 +1071,13 @@ class TestProviderStatusPopulatedCorrectly:
             )
             app._populate_connected_providers()
 
-        # _provider_status is set by populate for resolved env vars
-        assert app._provider_status.get("test-env-provider") is True, (
+        # After the architecture change, env-resolved providers are left
+        # UNSET in _provider_status — they are NOT set to True nor False.
+        # All True status comes from refresh_models() after live verification.
+        assert "test-env-provider" not in app._provider_status, (
             "FAILS: Provider with resolved {env:VAR} placeholder has\n"
-            "  status not set to True.  Expected: _provider_status to be True."
+            "  status in _provider_status. Expected: env-resolved keys\n"
+            "  are left UNSET (not in _provider_status at all) after populate."
         )
         # _connected_providers is NOT populated by _populate_connected_providers
         # — it's populated later by refresh_models() after live API verification.
@@ -1140,9 +1146,10 @@ class TestProviderStatusPopulatedCorrectly:
         """Verify provider status after populate for mixed scenarios.
 
         With the new architecture, _populate_connected_providers():
-        - Sets _provider_status for empty keys (False) and {env:VAR}
-          placeholders (True/False based on resolution).
-        - Does NOT set anything for real keys — those wait for
+        - Sets _provider_status=False for empty keys and unresolvable
+          {env:VAR} placeholders.
+        - Does NOT set anything for real keys (non-placeholder) or
+          resolved {env:VAR} placeholders — those wait for
           refresh_models() to live-verify.
         - Does NOT add anything to _connected_providers.
         """
@@ -1166,22 +1173,23 @@ class TestProviderStatusPopulatedCorrectly:
             )
             app._populate_connected_providers()
 
-        # Only empty, None, and {env:VAR} providers get status from populate.
-        # "real" (non-placeholder key) is NOT in _provider_status yet —
-        # it will be set by refresh_models() after live API verification.
-        for name in ("empty", "none", "env-set", "env-unset"):
+        # Only empty, None, and unresolvable {env:VAR} providers get status
+        # from populate. "real" (non-placeholder key) and "env-set"
+        # (resolved placeholder) are NOT in _provider_status yet —
+        # they will be set by refresh_models() after live API verification.
+        for name in ("empty", "none", "env-unset"):
             assert name in app._provider_status, (
                 f"Provider '{name}' missing from _provider_status."
             )
-        assert "real" not in app._provider_status, (
-            "Provider 'real' (real key) must NOT be in _provider_status "
-            "after populate — status is set by refresh_models()."
-        )
+        for name in ("real", "env-set"):
+            assert name not in app._provider_status, (
+                f"Provider '{name}' must NOT be in _provider_status "
+                "after populate — status is set by refresh_models()."
+            )
 
         # Status values
         assert app._provider_status["empty"] is False
         assert app._provider_status["none"] is False
-        assert app._provider_status["env-set"] is True
         assert app._provider_status["env-unset"] is False
 
         # _connected_providers is always empty after populate
@@ -1194,6 +1202,7 @@ class TestProviderStatusPopulatedCorrectly:
         app._connected_providers.add("real")
         app._connected_providers.add("env-set")
         app._provider_status["real"] = True
+        app._provider_status["env-set"] = True
 
         # After refresh_models, connected should reflect verified providers
         assert app._connected_providers == {"real", "env-set"}, (
@@ -1222,4 +1231,244 @@ class TestProviderStatusPopulatedCorrectly:
         assert app._connected_providers == set(), (
             "FAILS: _connected_providers should be empty when no providers "
             f"are defined.  Got: {app._connected_providers}"
+        )
+
+
+# =============================================================================
+# Stale provider pruning — save_config must not preserve removed providers
+# =============================================================================
+
+
+class TestStaleProviderPruning:
+    """``save_config()`` deep-merges the model dump into the existing config
+    file.  Without the prune step, provider entries that exist in the file
+    but NOT in the current model dump are preserved forever — once a test
+    provider like ``bad-provider`` or ``bad`` is written to the config file,
+    it can NEVER be removed by normal operations.
+
+    FIX: After the merge in ``save_config()``, a prune step filters
+    ``merged["provider"]`` to only include keys present in the model dump.
+    """
+
+    # ------------------------------------------------------------------
+    # Helper — write a temp config file and return the path
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _temp_config(
+        tmpdir: str, data: dict[str, object]
+    ) -> Path:
+        """Write *data* as ``pyharness.json`` inside *tmpdir* and return the path."""
+        config_path = Path(tmpdir) / "pyharness.json"
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return config_path
+
+    # ==================================================================
+    # TEST 1 — save_config prunes stale providers
+    # ==================================================================
+
+    def test_save_config_prunes_stale_providers(self) -> None:
+        """Write a config with ``{deepseek, bad}``, remove ``bad`` from the
+        model, call ``save_config()``, and verify ``bad`` is gone but
+        ``deepseek`` is preserved.
+        """
+        import json5
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = self._temp_config(
+                tmpdir,
+                {
+                    "model": "deepseek:deepseek-chat",
+                    "provider": {
+                        "deepseek": {"apiKey": "sk-deepseek-real"},
+                        "bad": {"apiKey": "sk-bad-value"},
+                    },
+                },
+            )
+
+            with patch.dict(
+                os.environ, {"PYHARNESS_CONFIG": str(config_path)}, clear=False
+            ):
+                from pyharness.config.loader import load_config, save_config
+
+                # Load config — both providers present
+                config = load_config(Path(tmpdir))
+                assert "deepseek" in config.provider, (
+                    "precondition: deepseek must be in loaded config"
+                )
+                assert "bad" in config.provider, (
+                    "precondition: bad must be in loaded config"
+                )
+
+                # Remove "bad" from the provider dict on the model
+                del config.provider["bad"]
+
+                # Save — this must prune "bad" from the file
+                save_config(config)
+
+            # Read the file back
+            raw = config_path.read_text(encoding="utf-8")
+            parsed = json5.loads(raw)
+            provider = parsed.get("provider", {})
+
+            # Assert "bad" is gone
+            assert "bad" not in provider, (
+                "FAILS: Stale provider 'bad' survived save_config().\n\n"
+                "  Expected: 'bad' removed from file because it was deleted\n"
+                "  from the model before saving.\n"
+                f"  Actual provider keys: {sorted(provider.keys())}\n\n"
+                f"  File contents:\n{raw}"
+            )
+
+            # Assert "deepseek" is preserved
+            assert "deepseek" in provider, (
+                "FAILS: Valid provider 'deepseek' was removed by save_config().\n\n"
+                "  Expected: 'deepseek' preserved — it was still in the model.\n"
+                f"  Actual provider keys: {sorted(provider.keys())}\n\n"
+                f"  File contents:\n{raw}"
+            )
+
+            assert provider["deepseek"].get("apiKey") == "sk-deepseek-real", (
+                "FAILS: deepseek apiKey was corrupted during save.\n"
+                f"  Expected: 'sk-deepseek-real'\n"
+                f"  Actual: {provider['deepseek'].get('apiKey')!r}"
+            )
+
+    # ==================================================================
+    # TEST 2 — _populate_connected_providers excludes removed entries
+    # ==================================================================
+
+    def test_populate_connected_providers_excludes_removed_entries(self) -> None:
+        """Scenario A: Config has ``bad`` with empty apiKey — populate sets
+        ``_provider_status["bad"] = False``.
+
+        Scenario B: Config was cleaned — ``bad`` removed entirely —
+        populate does NOT create a status entry for ``bad``.
+        """
+        # -- Scenario A: bad present, empty key → status=False -----------
+        app_a = PyHarnessApp()
+        app_a.config = PyHarnessConfig(
+            provider={
+                "deepseek": ProviderConfig(apiKey="sk-real"),
+                "bad": ProviderConfig(apiKey=""),
+            }
+        )
+        app_a._populate_connected_providers()
+
+        # "bad" has empty key → _provider_status["bad"] = False
+        assert "bad" in app_a._provider_status, (
+            "FAILS (Scenario A): Provider 'bad' with empty apiKey must "
+            "appear in _provider_status."
+        )
+        assert app_a._provider_status["bad"] is False, (
+            "FAILS (Scenario A): Provider 'bad' with empty apiKey must "
+            "have status=False."
+        )
+        # "deepseek" has real key → NOT in _provider_status yet
+        # (verified later by refresh_models())
+        assert "deepseek" not in app_a._provider_status, (
+            "deepseek has a real key — _provider_status entry is set "
+            "later by refresh_models()."
+        )
+
+        # -- Scenario B: bad was removed from config --------------------
+        app_b = PyHarnessApp()
+        app_b.config = PyHarnessConfig(
+            provider={
+                "deepseek": ProviderConfig(apiKey="sk-real"),
+                # "bad" — removed by user
+            }
+        )
+        app_b._populate_connected_providers()
+
+        # "bad" must NOT appear since it's not in config.provider
+        assert "bad" not in app_b._provider_status, (
+            "FAILS (Scenario B): Provider 'bad' appears in _provider_status\n"
+            "  even though it was REMOVED from the config.\n\n"
+            "  Expected: only providers from app.config.provider should appear.\n"
+            f"  Actual _provider_status keys: {sorted(app_b._provider_status.keys())}"
+        )
+
+        # "deepseek" still has real key → not in _provider_status yet
+        assert "deepseek" not in app_b._provider_status, (
+            "deepseek has a real key — status is set by refresh_models()."
+        )
+
+    # ==================================================================
+    # TEST 3 — Sidebar update excludes removed providers
+    # ==================================================================
+
+    def test_sidebar_update_iterates_passed_dict(self) -> None:
+        """``update_provider_status`` iterates the ``providers`` dict it
+        receives — it does NOT read from any other internal state.  The
+        caller controls what appears in the sidebar.
+        """
+        source = inspect.getsource(
+            Sidebar.update_provider_status
+        )
+
+        # Must iterate the passed parameter, not a class attribute
+        assert "for name, connected in providers.items()" in source or \
+            "for name, connected in providers" in source, (
+            "FAILS: update_provider_status does not iterate the passed "
+            "'providers' dict.\n\n"
+            f"  Source:\n{source[:400]}..."
+        )
+
+        # The "No providers connected" guard uses the passed param, not
+        # an internal cache
+        assert "if not providers" in source, (
+            "FAILS: update_provider_status should check 'if not providers' "
+            "on the passed parameter."
+        )
+
+    @staticmethod
+    def _build_sidebar_provider_text(providers: dict[str, bool]) -> str:
+        """Replicate the string-building logic of
+        ``Sidebar.update_provider_status`` without needing a mounted widget.
+        """
+        if not providers:
+            return "[#8b949e]No providers connected[/]"
+        lines: list[str] = []
+        for name, connected in providers.items():
+            dot = "[#3fb950]🟢[/]" if connected else "[#f85149]🔴[/]"
+            lines.append(f"  {dot} [#c9d1d9]{name}[/]")
+        return "\n".join(lines) if lines else "[#8b949e]No providers connected[/]"
+
+    def test_sidebar_only_shows_from_provider_status(self) -> None:
+        """Build sidebar provider text from a clean dict (only deepseek)
+        and verify it does NOT contain stale entries.
+        """
+        # Only deepseek connected
+        text = self._build_sidebar_provider_text({"deepseek": True})
+
+        assert "deepseek" in text, (
+            "FAILS: Sidebar text does not show 'deepseek'.\n"
+            f"  Text: {text}"
+        )
+
+        # Must NOT contain stale providers
+        for stale in ("bad", "bad-provider"):
+            assert stale not in text, (
+                f"FAILS: Sidebar text contains stale provider '{stale}'.\n\n"
+                f"  Only 'deepseek' → True was passed. '{stale}' should\n"
+                f"  not appear anywhere.\n  Text: {text}"
+            )
+
+        # Empty dict — must show default message
+        empty_text = self._build_sidebar_provider_text({})
+        assert "No providers connected" in empty_text, (
+            "FAILS: Empty provider dict should show 'No providers connected'.\n"
+            f"  Got: {empty_text}"
+        )
+
+        # Providers with mixed statuses — only passed names appear
+        mixed_text = self._build_sidebar_provider_text(
+            {"deepseek": True, "openai": False}
+        )
+        assert "deepseek" in mixed_text
+        assert "openai" in mixed_text
+        assert "bad" not in mixed_text, (
+            "FAILS: Sidebar text contains 'bad' even though only "
+            f"'deepseek' and 'openai' were passed.\n  Text: {mixed_text}"
         )

@@ -384,8 +384,9 @@ class PyHarnessApp(App):
 
         Does NOT mark providers as connected — that happens asynchronously
         in :meth:`refresh_models` after live model-list verification.
-        This method only pre-populates the status dict so the sidebar
-        can show "pending" state for providers with keys.
+        This method only sets ``False`` for clearly-broken keys (empty,
+        unresolvable placeholders). All other providers are left unset
+        until :meth:`refresh_models` verifies them.
         """
         import os
 
@@ -398,11 +399,9 @@ class PyHarnessApp(App):
                 self._provider_status[pname] = False
             elif key.startswith("{env:") and key.endswith("}"):
                 env_var = key[5:-1]
-                self._provider_status[pname] = bool(os.environ.get(env_var))
-            else:
-                # Has a key — but not verified yet.
-                # refresh_models() will set the real status after live check.
-                pass
+                if not os.environ.get(env_var):
+                    self._provider_status[pname] = False
+                # If env var IS set, leave unset — refresh_models will verify
 
     @property
     def current_agent(self) -> str:

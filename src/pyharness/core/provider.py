@@ -64,7 +64,7 @@ _NO_CONFIG_REQUIRED: frozenset[str] = frozenset({"ollama"})
 _PROVIDER_MODEL_ENDPOINTS: dict[str, dict] = {
     "openai":        {"url": "https://api.openai.com/v1/models",           "auth": "bearer"},
     "anthropic":     {"url": "https://api.anthropic.com/v1/models",        "auth": "x-api-key"},
-    "deepseek":      {"url": "https://api.deepseek.com/models",            "auth": "bearer"},
+    "deepseek":      {"url": "https://api.deepseek.com/v1/models",           "auth": "bearer"},
     "google-genai":  {"url": "https://generativelanguage.googleapis.com/v1beta/models", "auth": "goog"},
     "groq":          {"url": "https://api.groq.com/openai/v1/models",      "auth": "bearer"},
     "mistralai":     {"url": "https://api.mistral.ai/v1/models",           "auth": "bearer"},

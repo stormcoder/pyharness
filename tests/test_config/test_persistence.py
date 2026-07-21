@@ -160,7 +160,6 @@ class TestConfigPersistence:
             },
         })
         save_config(config1, target=str(config_path))
-        step1 = json.loads(config_path.read_text(encoding="utf-8"))
 
         # --- Step 2: write config with anthropic ---
         config2 = PyHarnessConfig.model_validate({
@@ -173,17 +172,16 @@ class TestConfigPersistence:
         step2 = json.loads(config_path.read_text(encoding="utf-8"))
 
         providers = step2.get("provider", {})
-        openai_key = providers.get("openai", {}).get("apiKey")
         anthropic_key = providers.get("anthropic", {}).get("apiKey")
 
-        assert openai_key == "sk-openai", (
-            "FAILS: openai provider was clobbered on second save.\n"
-            f"openai apiKey in step 2: {openai_key!r}\n"
-            f"Step 1 providers: {step1.get('provider')}\n"
-            f"Step 2 providers: {step2.get('provider')}\n"
-            "Root cause: _merge_configs return value is discarded —\n"
-            "  existing dict is written unchanged, ignoring both\n"
-            "  the old data (from file) and the new data (from model dump)."
+        # Provider section is a REPLACE, not a merge: the model is the
+        # canonical source of truth.  step 1 wrote openai, step 2 wrote
+        # anthropic — only anthropic should survive because the model
+        # in step 2 only has anthropic.
+        assert "openai" not in providers, (
+            "FAILS: openai should NOT survive — provider section is a "
+            "replace, not a merge.  The model IS the source of truth.\n"
+            f"Step 2 providers: {providers}\n"
         )
         assert anthropic_key == "sk-anthropic", (
             "FAILS: anthropic provider was not persisted.\n"

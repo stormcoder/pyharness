@@ -1611,12 +1611,13 @@ class TestConnectedProviderModelFilter:
 
     def test_connected_providers_with_resolved_env_placeholder(self) -> None:
         """Provider with {env:VAR} placeholder AND the env var SET in
-        os.environ gets _provider_status=True from populate, but is NOT
-        added to _connected_providers (that happens in refresh_models()).
+        os.environ is left UNSET in _provider_status after populate.
+        It is NOT added to _connected_providers (that happens in
+        refresh_models()).
 
-        This is the happy-path for users who set env vars — the status dot
-        appears immediately, but the actual connection verification happens
-        asynchronously via the API."""
+        After the architecture change, env-resolved providers are left
+        unset — all True status comes from refresh_models() after live
+        API verification."""
         import os
         from pyharness.config.schema import ProviderConfig
 
@@ -1638,9 +1639,11 @@ class TestConnectedProviderModelFilter:
         with patch.object(os, "environ", {"ANTHROPIC_API_KEY": "sk-ant-real"}):
             app._populate_connected_providers()
 
-        # _provider_status reflects env-var resolution from populate
-        assert app._provider_status.get("anthropic") is True, (
-            "anthropic env var IS set → _provider_status must be True."
+        # After the architecture change, env-resolved providers are left
+        # UNSET in _provider_status — they are NOT set to True nor False.
+        # All True status comes from refresh_models() after live verification.
+        assert "anthropic" not in app._provider_status, (
+            "anthropic env var IS set → left UNSET, not in _provider_status."
         )
         assert app._provider_status.get("openrouter") is False, (
             "openrouter env var NOT set → _provider_status must be False."
