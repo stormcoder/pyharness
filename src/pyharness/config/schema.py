@@ -169,7 +169,7 @@ class PyHarnessConfig(BaseModel):
 
     # ---- Logging ----
     log_level: Literal["ERROR", "INFO"] | None = Field(
-        default=None,
+        default="INFO",
         description="Log level: None (disabled), ERROR, or INFO",
     )
 

@@ -73,6 +73,10 @@ def _make_configured_app() -> PyHarnessApp:
         provider={"openrouter": ProviderConfig(apiKey="sk-test")},
     )
     app._connected_providers = {"openrouter"}
+    # Prevent refresh_models from clearing _connected_providers during tests
+    async def _noop_refresh() -> None:
+        pass
+    app.refresh_models = _noop_refresh  # type: ignore[assignment]
     return app
 
 

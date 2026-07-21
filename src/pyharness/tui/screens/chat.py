@@ -330,22 +330,27 @@ class ChatScreen(Screen):
 
         self._write("[#d29922]⏳ Thinking...[/]")
 
+        # Set up the agent graph and runner — all inside a single try block
+        # so that any crash (import error, tool registry failure, graph
+        # compilation failure) is caught and surfaced in-chat rather than
+        # dumping a traceback to the terminal.
+        runner: object = None
+        session_id: str = ""
         try:
             from pyharness.core.provider import resolve_model
             from pyharness.core.agent import AgentRunner, create_agent_graph
             from pyharness.tools.registry import get_registry
 
             model = resolve_model(model_id, self.app.config)
+            tools = get_registry().get_all()
+            session_id = self.app._current_session_id or "default"
+            agent_name = self.app.AGENTS[self.app._current_agent_index]
+            graph = create_agent_graph(model, tools)
+            runner = AgentRunner(graph, session_id, agent_name, model_id)
         except Exception as exc:
-            self._write(f"[#f85149]Error resolving model:[/] {exc}")
+            self._write(f"[#f85149]Error setting up agent:[/] {exc}")
             event.input.value = ""
             return
-
-        tools = get_registry().get_all()
-        session_id = self.app._current_session_id or "default"
-        agent_name = self.app.AGENTS[self.app._current_agent_index]
-        graph = create_agent_graph(model, tools)
-        runner = AgentRunner(graph, session_id, agent_name, model_id)
 
         # Stream agent events into the chat output.
         # Tokens are buffered and rendered as formatted markdown when the

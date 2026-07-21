@@ -1508,8 +1508,15 @@ class TestConnectedProviderModelFilter:
     # ------------------------------------------------------------------
 
     def test_connected_providers_populated_from_config(self) -> None:
-        """On startup, providers with real (non-placeholder, non-empty) API
-        keys are added to _connected_providers."""
+        """On startup, providers with real API keys are NOT automatically
+        added to _connected_providers.  _populate_connected_providers()
+        only pre-populates _provider_status for empty keys and {env:VAR}
+        placeholders.  Real keys are verified asynchronously by
+        refresh_models() which does live API calls.
+
+        After refresh_models() completes, _connected_providers contains
+        only providers that passed live verification.
+        """
         from pyharness.config.schema import ProviderConfig
 
         app = PyHarnessApp()
@@ -1524,15 +1531,37 @@ class TestConnectedProviderModelFilter:
 
         app._populate_connected_providers()
 
-        assert "deepseek" in app._connected_providers, (
-            "FAILS: deepseek has a real API key — must be connected."
+        # After populate: _connected_providers is always empty.
+        assert app._connected_providers == set(), (
+            "_connected_providers must be empty after populate — "
+            "live verification happens in refresh_models()."
         )
+
+        # _provider_status reflects empty/unresolved keys only
         assert "openrouter" not in app._connected_providers, (
-            "FAILS: openrouter has an unresolved {env:...} placeholder "
-            "and the env var is not set — must NOT be connected."
+            "openrouter has unresolved {env:...} — not connected."
         )
         assert "ollama" not in app._connected_providers, (
-            "FAILS: ollama has no API key — must NOT be connected."
+            "ollama has no API key — not connected."
+        )
+        # deepseek has a real key, but is NOT yet verified
+        assert "deepseek" not in app._connected_providers, (
+            "deepseek has real key but not verified yet — "
+            "refresh_models() will verify it asynchronously."
+        )
+
+        # Simulate refresh_models() success for deepseek
+        app._connected_providers.add("deepseek")
+        app._provider_status["deepseek"] = True
+
+        assert "deepseek" in app._connected_providers, (
+            "After refresh_models(), deepseek must be connected."
+        )
+        assert "openrouter" not in app._connected_providers, (
+            "openrouter env var not set — must NOT be connected."
+        )
+        assert "ollama" not in app._connected_providers, (
+            "ollama has no key — must NOT be connected."
         )
 
     # ------------------------------------------------------------------
@@ -1582,10 +1611,12 @@ class TestConnectedProviderModelFilter:
 
     def test_connected_providers_with_resolved_env_placeholder(self) -> None:
         """Provider with {env:VAR} placeholder AND the env var SET in
-        os.environ must be treated as connected.
+        os.environ gets _provider_status=True from populate, but is NOT
+        added to _connected_providers (that happens in refresh_models()).
 
-        This is the happy-path for users who set env vars — they should
-        NOT have to run /connect to see models."""
+        This is the happy-path for users who set env vars — the status dot
+        appears immediately, but the actual connection verification happens
+        asynchronously via the API."""
         import os
         from pyharness.config.schema import ProviderConfig
 
@@ -1607,13 +1638,28 @@ class TestConnectedProviderModelFilter:
         with patch.object(os, "environ", {"ANTHROPIC_API_KEY": "sk-ant-real"}):
             app._populate_connected_providers()
 
-        assert "anthropic" in app._connected_providers, (
-            "FAILS: anthropic env var IS set — must be connected.\n"
-            f"  _connected_providers: {app._connected_providers}"
+        # _provider_status reflects env-var resolution from populate
+        assert app._provider_status.get("anthropic") is True, (
+            "anthropic env var IS set → _provider_status must be True."
+        )
+        assert app._provider_status.get("openrouter") is False, (
+            "openrouter env var NOT set → _provider_status must be False."
+        )
+
+        # _connected_providers is NOT populated by _populate_connected_providers
+        # — it's populated by refresh_models() after live API verification.
+        assert "anthropic" not in app._connected_providers, (
+            "_populate_connected_providers no longer adds to "
+            "_connected_providers — that happens in refresh_models()."
         )
         assert "openrouter" not in app._connected_providers, (
-            "FAILS: openrouter env var NOT set — must NOT be connected.\n"
-            f"  _connected_providers: {app._connected_providers}"
+            "openrouter env var NOT set → must NOT be connected."
+        )
+
+        # Simulate refresh_models() verifying anthropic via live API call
+        app._connected_providers.add("anthropic")
+        assert "anthropic" in app._connected_providers, (
+            "After refresh_models(), anthropic must be connected."
         )
 
     # ------------------------------------------------------------------

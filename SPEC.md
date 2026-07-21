@@ -452,6 +452,16 @@ model-listing API, it cannot be used with pyharness. This is
 intentional — a provider without a discoverable model list has
 no path into the system.
 
+**Connected status lifecycle**: A provider is marked 🟢 connected ONLY
+after a successful model-list fetch. On startup, ``refresh_models()``
+iterates every provider with a non-empty key. Each provider that
+responds successfully is added to ``_connected_providers``. Providers
+that fail or have empty keys are excluded. The sidebar reflects this
+status asynchronously after verification completes.
+
+**Logging**: ``log_level`` defaults to ``"INFO"`` for diagnostic output
+during development. Set to ``null`` in ``pyharness.json`` to disable.
+
 ---
 
 ## 5. Agent System

@@ -396,9 +396,20 @@ class TestStaleModelClearing:
         )
         app._connected_providers = set()
 
-        # Run _populate_connected_providers — openai has unresolved env var,
-        # deepseek has real key
+        # Run _populate_connected_providers.
+        # With the new architecture, populate ONLY sets _provider_status
+        # for empty keys and resolved {env:VAR} placeholders — it does NOT
+        # add anything to _connected_providers. Connection verification
+        # happens later, asynchronously in refresh_models().
         app._populate_connected_providers()
+
+        # After populate: _connected_providers is empty.
+        # Both openai (unresolved env var → status=False) and deepseek
+        # (real key → NOT added to _connected_providers) are not connected.
+        assert app._connected_providers == set(), (
+            "_connected_providers must be empty after populate — "
+            "live verification happens in refresh_models(), not populate."
+        )
 
         # on_mount logic: if model provider not in _connected_providers, clear
         model = app.config.model or ""
@@ -411,12 +422,26 @@ class TestStaleModelClearing:
             "FAILS: Stale model 'openai:gpt-5' was not cleared.\n\n"
             f"  _connected_providers: {app._connected_providers}\n"
             f"  Model: {app.config.model!r}\n\n"
-            "  The openai provider has an unresolved {env:...} placeholder\n"
-            "  and is NOT connected.  The model must be cleared so the\n"
-            "  status bar doesn't show a stale model reference."
+            "  Neither openai (unresolved {env:...} placeholder) nor "
+            "  deepseek (unverified real key) is connected yet.  The "
+            "  model must be cleared so the status bar doesn't show "
+            "  a stale model reference."
         )
-        assert "deepseek" in app._connected_providers, (
-            "deepseek should be connected (has a real apiKey)."
+        # deepseek has a real apiKey — but it's NOT verified yet.
+        # _populate_connected_providers only sets status for empty/env keys;
+        # real keys are verified later in refresh_models().
+        assert "deepseek" not in app._connected_providers, (
+            "deepseek has a real apiKey but is NOT yet verified — "
+            "refresh_models() will verify it asynchronously."
+        )
+        # Provider status for empty/unresolved env keys:
+        assert app._provider_status.get("openai") is False, (
+            "openai (unresolved {env:...}) → status=False"
+        )
+        # Real keys have no status entry yet (set later by refresh_models)
+        assert "deepseek" not in app._provider_status, (
+            "deepseek (real key) has no status yet — "
+            "refresh_models() will set it after live verification."
         )
 
     # ------------------------------------------------------------------
@@ -599,7 +624,13 @@ class TestSidebarProviderStatusOnStartup:
         )
 
     def test_provider_status_populated_for_connected_provider(self):
-        """Provider with a real key must get _provider_status[provider]=True."""
+        """Provider with a real key gets no status entry from populate —
+        it is verified asynchronously by refresh_models().
+
+        _populate_connected_providers() only sets _provider_status for
+        empty keys (False) and resolved {env:VAR} placeholders (True/False).
+        Real keys are left for refresh_models() to verify and set status.
+        """
         from pathlib import Path
         from tempfile import TemporaryDirectory
 
@@ -621,11 +652,28 @@ class TestSidebarProviderStatusOnStartup:
                 )
                 app._populate_connected_providers()
 
+                # After populate: real keys are NOT added to _provider_status.
+                # They are verified asynchronously by refresh_models().
+                assert "test" not in app._provider_status, (
+                    "Provider with real key must NOT appear in _provider_status "
+                    "after populate — status is set by refresh_models() "
+                    "after live API verification."
+                )
+                assert "test" not in app._connected_providers, (
+                    "Provider with real key must NOT be in _connected_providers "
+                    "after populate — connection is verified live in "
+                    "refresh_models()."
+                )
+
+                # Simulate refresh_models() success:
+                app._connected_providers.add("test")
+                app._provider_status["test"] = True
+
                 assert "test" in app._provider_status, (
-                    "Provider with real key must appear in _provider_status"
+                    "After refresh_models(), provider must appear in _provider_status"
                 )
                 assert app._provider_status["test"] is True, (
-                    "Provider with real key must have status=True"
+                    "After successful refresh_models(), provider must have status=True"
                 )
 
     def test_provider_status_false_for_empty_key(self):
@@ -644,4 +692,534 @@ class TestSidebarProviderStatusOnStartup:
         )
         assert app._provider_status["bad"] is False, (
             "Provider with empty key must have status=False"
+        )
+
+
+# =============================================================================
+# BUG A — Agent setup crash dumps traceback to shell
+# =============================================================================
+
+
+class TestAgentSetupTryBlockCoverage:
+    """BUG A: In ``ChatScreen.on_input_submitted``, the try/except block
+    originally only wrapped ``resolve_model()``.  Lines after it
+    (``get_registry().get_all()``, ``create_agent_graph()``,
+    ``AgentRunner()`` constructor) were OUTSIDE the try block, so any
+    failure there dumped a raw traceback to the shell instead of showing
+    an in-chat error message.
+
+    FIX: The try block was extended to cover ALL agent setup code:
+    model resolution + tool registry + graph creation + runner
+    instantiation.  The except handler now clears ``event.input.value``
+    (so the input field isn't stuck) and writes "Error setting up agent"
+    to chat.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST A1 — get_registry().get_all() is INSIDE the try block
+    # ------------------------------------------------------------------
+
+    def test_get_registry_get_all_inside_try_block(self) -> None:
+        """``get_registry().get_all()`` must be INSIDE the try block,
+        not after it.
+
+        If this call is outside the try block and the tool registry
+        throws, the exception propagates to Textual's event loop and
+        dumps a traceback to the terminal instead of showing an in-chat
+        error.
+        """
+        import inspect
+        from pyharness.tui.screens.chat import ChatScreen
+
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+
+        # Find "Error setting up agent" message
+        assert "Error setting up agent" in source, (
+            "FAILS: 'Error setting up agent' not found in source.\n\n"
+            "  Expected: the except handler writes this message to chat."
+        )
+
+        # Find get_registry().get_all() position
+        registry_pos = source.find("get_registry().get_all")
+        if registry_pos < 0:
+            registry_pos = source.find("get_registry()")
+        assert registry_pos >= 0, (
+            "FAILS: get_registry() call not found in on_input_submitted.\n\n"
+            "  Expected: get_registry().get_all() to populate tools."
+        )
+
+        # Locate the correct try/except pair by searching backwards
+        # from resolve_model (which is inside the agent-setup try block).
+        resolve_pos = source.find("resolve_model")
+        assert resolve_pos >= 0
+        try_pos = source[:resolve_pos].rfind("try:")
+        assert try_pos >= 0, (
+            "FAILS: try: not found before resolve_model in on_input_submitted."
+        )
+
+        # Find the 'except' keyword after resolve_model
+        except_pos = resolve_pos + source[resolve_pos:].find("except")
+
+        # The registry call must be BETWEEN try: and the matching except
+        assert try_pos < registry_pos < except_pos, (
+            "FAILS: get_registry().get_all() is NOT inside the try block.\n\n"
+            f"  try: line at position {try_pos}\n"
+            f"  get_registry() at position {registry_pos}\n"
+            f"  except: line at position {except_pos}\n\n"
+            "  If registry throws, the exception should be caught by\n"
+            "  the except handler — not propagate to the shell."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST A2 — create_agent_graph() is INSIDE the try block
+    # ------------------------------------------------------------------
+
+    def test_create_agent_graph_inside_try_block(self) -> None:
+        """``create_agent_graph(model, tools)`` must be INSIDE the try
+        block, not after it.
+
+        If graph compilation fails, the error must appear in-chat
+        as "Error setting up agent", not a raw traceback.
+        """
+        import inspect
+        from pyharness.tui.screens.chat import ChatScreen
+
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+
+        # Locate by resolve_model anchor
+        resolve_pos = source.find("resolve_model")
+        assert resolve_pos >= 0
+        try_pos = source[:resolve_pos].rfind("try:")
+        assert try_pos >= 0
+
+        # Find the 'except' keyword after resolve_model
+        except_pos = resolve_pos + source[resolve_pos:].find("except")
+
+        graph_pos = source.find("create_agent_graph")
+        assert graph_pos >= 0, (
+            "FAILS: create_agent_graph call not found in on_input_submitted.\n\n"
+            "  Expected: create_agent_graph(model, tools) inside try block."
+        )
+
+        assert try_pos < graph_pos < except_pos, (
+            "FAILS: create_agent_graph() is NOT inside the try block.\n\n"
+            f"  try: line at position {try_pos}\n"
+            f"  create_agent_graph at position {graph_pos}\n"
+            f"  except: line at position {except_pos}\n\n"
+            "  Graph compilation failures must be caught by the except\n"
+            "  handler so the user sees an in-chat error, not a shell traceback."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST A3 — AgentRunner() constructor is INSIDE the try block
+    # ------------------------------------------------------------------
+
+    def test_agent_runner_constructor_inside_try_block(self) -> None:
+        """``AgentRunner()`` construction must be INSIDE the try block.
+
+        If the AgentRunner constructor raises (e.g. missing checkpoint
+        adapter), the error must appear in-chat.
+        """
+        import inspect
+        from pyharness.tui.screens.chat import ChatScreen
+
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+
+        # Locate by resolve_model anchor
+        resolve_pos = source.find("resolve_model")
+        assert resolve_pos >= 0
+        try_pos = source[:resolve_pos].rfind("try:")
+        assert try_pos >= 0
+
+        # Find the 'except' keyword after resolve_model
+        except_pos = resolve_pos + source[resolve_pos:].find("except")
+
+        runner_pos = source.find("AgentRunner(")
+        assert runner_pos >= 0, (
+            "FAILS: AgentRunner() call not found in on_input_submitted.\n\n"
+            "  Expected: runner = AgentRunner(graph, ...) inside try block."
+        )
+
+        assert try_pos < runner_pos < except_pos, (
+            "FAILS: AgentRunner() construction is NOT inside the try block.\n\n"
+            f"  try: line at position {try_pos}\n"
+            f"  AgentRunner at position {runner_pos}\n"
+            f"  except: line at position {except_pos}\n\n"
+            "  Constructor failures must be caught so the user sees\n"
+            "  'Error setting up agent' in chat, not a shell traceback."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST A4 — except handler clears event.input.value
+    # ------------------------------------------------------------------
+
+    def test_except_handler_clears_input_value(self) -> None:
+        """The except handler MUST clear ``event.input.value = \"\"``
+        so the input field is not stuck with unsubmitted text after
+        an agent setup failure.
+        """
+        import inspect
+        from pyharness.tui.screens.chat import ChatScreen
+
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+
+        # Find the "Error setting up agent" except clause.
+        # Look for event.input.value = "" AFTER the except line and
+        # BEFORE any return within that handler.
+        except_pos = source.find("except")
+
+        # Slice the source from except_pos to end — find event.input.value
+        # within that region
+        after_except = source[except_pos:]
+        assert "event.input.value" in after_except, (
+            "FAILS: except handler does NOT clear event.input.value.\n\n"
+            "  Expected: `event.input.value = \"\"` in the except handler\n"
+            "  so the user can type a new message.  Without this, the\n"
+            "  input field stays populated with the failed message."
+        )
+
+        # Verify it's a clearing assignment (empty string)
+        assert 'event.input.value = ""' in source or "event.input.value = ''" in source, (
+            "FAILS: event.input.value is referenced but not cleared to empty.\n\n"
+            "  Expected: `event.input.value = \"\"` in the except handler."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST A5 — error message text in except handler
+    # ------------------------------------------------------------------
+
+    def test_except_handler_writes_error_message(self) -> None:
+        """The except handler must write 'Error setting up agent'
+        to the chat output so the user sees what went wrong.
+        """
+        import inspect
+        from pyharness.tui.screens.chat import ChatScreen
+
+        source = inspect.getsource(ChatScreen.on_input_submitted)
+
+        assert "Error setting up agent" in source, (
+            "FAILS: 'Error setting up agent' not found in source.\n\n"
+            "  Expected: the except handler writes this message to chat\n"
+            "  so the user understands that agent setup failed, rather\n"
+            "  than seeing a silent failure or shell traceback."
+        )
+
+
+# =============================================================================
+# BUGs B & C — Provider status tests
+# =============================================================================
+
+
+class TestProviderStatusPopulatedCorrectly:
+    """Bugs B & C: ``_populate_connected_providers`` must correctly
+    populate both ``_connected_providers`` (a set) and
+    ``_provider_status`` (a dict) for all providers defined in config.
+
+    BUG B: Test provider entries ("bad-provider", "bad") leaked from
+    development into production config. Providers with empty or
+    placeholder ``apiKey`` values must NOT be marked as connected,
+    but MUST still appear in ``_provider_status`` as False.
+
+    BUG C: The original code only populated ``_connected_providers``
+    (a set of connected provider names).  It never populated
+    ``_provider_status`` (a dict), so the sidebar couldn't show
+    connection dots on startup.  Now both are populated.
+    """
+
+    # ------------------------------------------------------------------
+    # TEST B1 — empty string apiKey → NOT connected, status=False
+    # ------------------------------------------------------------------
+
+    def test_empty_apikey_not_connected(self) -> None:
+        """Provider with ``apiKey: \"\"`` must NOT be added to
+        ``_connected_providers``, but MUST get
+        ``_provider_status[name] = False``.
+        """
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(
+            provider={"bad-provider": ProviderConfig(apiKey="")}
+        )
+        app._populate_connected_providers()
+
+        # BUG B: must NOT be in _connected_providers
+        assert "bad-provider" not in app._connected_providers, (
+            "FAILS: Provider with empty apiKey was added to _connected_providers.\n\n"
+            "  Expected: empty string apiKey → NOT connected.\n"
+            "  Actual: _connected_providers contains 'bad-provider'."
+        )
+
+        # BUG C: must be in _provider_status as False
+        assert "bad-provider" in app._provider_status, (
+            "FAILS: Provider with empty apiKey not in _provider_status.\n\n"
+            "  Expected: all providers defined in config appear in\n"
+            "  _provider_status, even when not connected."
+        )
+        assert app._provider_status["bad-provider"] is False, (
+            "FAILS: Provider with empty apiKey has status=True.\n\n"
+            "  Expected: _provider_status['bad-provider'] = False."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST B2 — non-empty real key → connected AND status=True
+    # ------------------------------------------------------------------
+
+    def test_real_apikey_connected_and_status_true(self) -> None:
+        """Provider with a non-empty, non-placeholder ``apiKey`` is NOT
+        added to _connected_providers or _provider_status by populate.
+
+        _populate_connected_providers() only handles empty keys and
+        {env:VAR} placeholders.  Real keys are verified asynchronously
+        by refresh_models() which does live API calls.
+        """
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(
+            provider={"openai": ProviderConfig(apiKey="sk-proj-abc123")}
+        )
+        app._populate_connected_providers()
+
+        # After populate: real keys get neither connected nor status.
+        assert "openai" not in app._connected_providers, (
+            "Provider with real apiKey must NOT be in _connected_providers "
+            "after populate — live verification happens in refresh_models()."
+        )
+        assert "openai" not in app._provider_status, (
+            "Provider with real apiKey must NOT be in _provider_status "
+            "after populate — status is set by refresh_models()."
+        )
+
+        # Simulate what refresh_models() does after successful API call:
+        app._connected_providers.add("openai")
+        app._provider_status["openai"] = True
+
+        assert "openai" in app._connected_providers, (
+            "After refresh_models(), provider must be in _connected_providers."
+        )
+        assert app._provider_status.get("openai") is True, (
+            "After successful refresh_models(), status must be True."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST B3 — placeholder {env:VAR} with unset env → status=False
+    # ------------------------------------------------------------------
+
+    def test_placeholder_env_unset_status_false(self) -> None:
+        """Provider with ``apiKey: \"{env:VAR}\"`` where the env var is
+        NOT set must get ``_provider_status[name] = False`` and must NOT
+        be added to ``_connected_providers``.
+        """
+        import os
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        # Ensure env var is NOT set for this test
+        env_var = "PYHARNESS_TEST_NOT_SET_XY"
+        with patch.dict(os.environ, {}, clear=False):
+            if env_var in os.environ:
+                del os.environ[env_var]
+
+            app = PyHarnessApp()
+            app.config = PyHarnessConfig(
+                provider={
+                    "google-genai": ProviderConfig(
+                        apiKey=f"{{env:{env_var}}}"
+                    )
+                }
+            )
+            app._populate_connected_providers()
+
+        assert "google-genai" not in app._connected_providers, (
+            "FAILS: Provider with unresolved {env:VAR} placeholder was\n"
+            f"  added to _connected_providers.  Env var '{env_var}' is\n"
+            "  not set → provider must NOT be connected."
+        )
+        assert app._provider_status.get("google-genai") is False, (
+            "FAILS: Provider with unresolved {env:VAR} placeholder has\n"
+            "  status=True.  Expected: _provider_status='google-genai' = False."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST B4 — placeholder {env:VAR} with SET env → status=True
+    # ------------------------------------------------------------------
+
+    def test_placeholder_env_set_status_true(self) -> None:
+        """Provider with ``apiKey: \"{env:VAR}\"`` where the env var IS
+        set must get ``_provider_status[name] = True`` from populate,
+        but is NOT added to ``_connected_providers`` (that happens
+        later, asynchronously in refresh_models())."""
+        import os
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        env_var = "PYHARNESS_TEST_SET_AB"
+        with patch.dict(os.environ, {env_var: "sk-test-set-value"}):
+            app = PyHarnessApp()
+            app.config = PyHarnessConfig(
+                provider={
+                    "test-env-provider": ProviderConfig(
+                        apiKey=f"{{env:{env_var}}}"
+                    )
+                }
+            )
+            app._populate_connected_providers()
+
+        # _provider_status is set by populate for resolved env vars
+        assert app._provider_status.get("test-env-provider") is True, (
+            "FAILS: Provider with resolved {env:VAR} placeholder has\n"
+            "  status not set to True.  Expected: _provider_status to be True."
+        )
+        # _connected_providers is NOT populated by _populate_connected_providers
+        # — it's populated later by refresh_models() after live API verification.
+        assert "test-env-provider" not in app._connected_providers, (
+            "_populate_connected_providers no longer adds to "
+            "_connected_providers — that happens in refresh_models()."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST C1 — provider NOT in config → not in _provider_status
+    # ------------------------------------------------------------------
+
+    def test_provider_not_in_config_not_in_status(self) -> None:
+        """A provider that is NOT defined in the config at all must NOT
+        appear in ``_provider_status`` (no entry, not even False).
+        """
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(
+            provider={"only-this": ProviderConfig(apiKey="sk-real")}
+        )
+        app._populate_connected_providers()
+
+        assert "nonexistent" not in app._provider_status, (
+            "FAILS: Provider 'nonexistent' appears in _provider_status\n"
+            "  even though it is NOT defined in the config.\n\n"
+            "  Expected: only providers from app.config.provider should\n"
+            "  appear in _provider_status."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST C2 — None apiKey (not just empty string) → status=False
+    # ------------------------------------------------------------------
+
+    def test_none_apikey_status_false(self) -> None:
+        """Provider with ``apiKey=None`` (not set at all) must get
+        ``_provider_status[name] = False`` and NOT be in
+        ``_connected_providers``.
+        """
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(
+            provider={"no-key": ProviderConfig(apiKey=None)}
+        )
+        app._populate_connected_providers()
+
+        assert "no-key" not in app._connected_providers, (
+            "FAILS: Provider with apiKey=None was added to _connected_providers."
+        )
+        assert "no-key" in app._provider_status, (
+            "FAILS: Provider with apiKey=None not in _provider_status."
+        )
+        assert app._provider_status["no-key"] is False, (
+            "FAILS: Provider with apiKey=None has status=True."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST C3 — multiple providers, mixed statuses
+    # ------------------------------------------------------------------
+
+    def test_multiple_providers_mixed_status(self) -> None:
+        """Verify provider status after populate for mixed scenarios.
+
+        With the new architecture, _populate_connected_providers():
+        - Sets _provider_status for empty keys (False) and {env:VAR}
+          placeholders (True/False based on resolution).
+        - Does NOT set anything for real keys — those wait for
+          refresh_models() to live-verify.
+        - Does NOT add anything to _connected_providers.
+        """
+        import os
+        from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+        from pyharness.tui.app import PyHarnessApp
+
+        env_var = "PYHARNESS_MIXED_TEST"
+        with patch.dict(os.environ, {env_var: "sk-from-env"}):
+            app = PyHarnessApp()
+            app.config = PyHarnessConfig(
+                provider={
+                    "real": ProviderConfig(apiKey="sk-real"),
+                    "empty": ProviderConfig(apiKey=""),
+                    "none": ProviderConfig(apiKey=None),
+                    "env-set": ProviderConfig(apiKey=f"{{env:{env_var}}}"),
+                    "env-unset": ProviderConfig(
+                        apiKey="{env:PYHARNESS_NOT_SET_ZQ}"
+                    ),
+                }
+            )
+            app._populate_connected_providers()
+
+        # Only empty, None, and {env:VAR} providers get status from populate.
+        # "real" (non-placeholder key) is NOT in _provider_status yet —
+        # it will be set by refresh_models() after live API verification.
+        for name in ("empty", "none", "env-set", "env-unset"):
+            assert name in app._provider_status, (
+                f"Provider '{name}' missing from _provider_status."
+            )
+        assert "real" not in app._provider_status, (
+            "Provider 'real' (real key) must NOT be in _provider_status "
+            "after populate — status is set by refresh_models()."
+        )
+
+        # Status values
+        assert app._provider_status["empty"] is False
+        assert app._provider_status["none"] is False
+        assert app._provider_status["env-set"] is True
+        assert app._provider_status["env-unset"] is False
+
+        # _connected_providers is always empty after populate
+        assert app._connected_providers == set(), (
+            f"FAILS: _connected_providers must be empty after populate, "
+            f"got {app._connected_providers}."
+        )
+
+        # Simulate what refresh_models() does after live verification
+        app._connected_providers.add("real")
+        app._connected_providers.add("env-set")
+        app._provider_status["real"] = True
+
+        # After refresh_models, connected should reflect verified providers
+        assert app._connected_providers == {"real", "env-set"}, (
+            f"After refresh_models(), _connected_providers should be "
+            f"{{'real', 'env-set'}}, got {app._connected_providers}."
+        )
+
+    # ------------------------------------------------------------------
+    # TEST C4 — no config providers → _provider_status stays empty
+    # ------------------------------------------------------------------
+
+    def test_no_providers_empty_status(self) -> None:
+        """When no providers are defined in config, ``_provider_status``
+        must remain empty and ``_connected_providers`` must be empty.
+        """
+        from pyharness.tui.app import PyHarnessApp
+
+        app = PyHarnessApp()
+        app.config = PyHarnessConfig(provider={})
+        app._populate_connected_providers()
+
+        assert app._provider_status == {}, (
+            "FAILS: _provider_status should be empty when no providers "
+            f"are defined.  Got: {app._provider_status}"
+        )
+        assert app._connected_providers == set(), (
+            "FAILS: _connected_providers should be empty when no providers "
+            f"are defined.  Got: {app._connected_providers}"
         )

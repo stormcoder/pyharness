@@ -1033,22 +1033,38 @@ class TestPersistenceAcrossRestarts:
             saved_data = _load_file(config_path)
             app2.config = PyHarnessConfig.model_validate(saved_data)
 
-            # Populate connected providers (simulating on_mount)
+            # Populate provider status (simulating on_mount call).
+            # _populate_connected_providers() no longer adds to
+            # _connected_providers — connection is verified async by
+            # refresh_models() which does live API checks.
             app2._populate_connected_providers()
 
-            assert "openai" in app2._connected_providers, (
-                "FAILS: After restart, openai is NOT in _connected_providers.\n"
-                f"  Connected providers: {app2._connected_providers}\n"
-                "  The provider key was persisted, so the provider should\n"
-                "  be recognized as connected after restart."
+            # After populate: _connected_providers is empty —
+            # connection only happens after refresh_models().
+            assert app2._connected_providers == set(), (
+                "_connected_providers must be empty after populate — "
+                "connection verification happens asynchronously in "
+                "refresh_models(), not during populate."
             )
 
-            # The model list is populated asynchronously via refresh_models().
-            # In a real app, on_mount calls refresh_models() which queries
-            # the provider API.  Here we manually populate to avoid network.
+            # _provider_status for real keys is NOT set by populate —
+            # it's left for refresh_models() to set after live verification.
+            assert "openai" not in app2._provider_status, (
+                "openai has a real apiKey (not an env placeholder) — "
+                "_provider_status is NOT set by populate for real keys; "
+                "refresh_models() sets it after live API verification."
+            )
+
+            # Simulate what refresh_models() does: live-verify the provider,
+            # add to _connected_providers, and populate _available_models.
+            app2._connected_providers.add("openai")
+            app2._provider_status["openai"] = True
             app2._available_models = ["openai:gpt-5", "openai:gpt-4o-mini"]
             app2._model_list_loaded = True
 
+            assert "openai" in app2._connected_providers, (
+                "After refresh_models(), openai must be in _connected_providers."
+            )
             assert len(app2._available_models) >= 1, (
                 "FAILS: _available_models must be populatable after restart.\n"
                 f"  Length: {len(app2._available_models)}.\n"

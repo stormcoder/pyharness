@@ -217,20 +217,24 @@ class PyHarnessApp(App):
             from pyharness.core.logging import setup_logging
             setup_logging(level=self.config.log_level)
         self._load_keybinds()
-        # Populate _connected_providers from config: a provider is "connected"
-        # if it has a non-empty, non-placeholder apiKey.
+        # Pre-populate _provider_status from config keys (not connection status).
+        # Connection verification happens asynchronously in refresh_models().
         self._populate_connected_providers()
-        # If the stored model's provider isn't connected, clear the model.
-        # Prevents showing stale model info on the status bar.
-        model = self.config.model or ""
-        if model and ":" in model:
-            model_provider = model.split(":")[0]
-            if model_provider not in self._connected_providers:
-                self.config.model = ""
-        # Populate model cache from configured providers (live fetch, async).
-        # Only models from connected providers are included.
+        # Async: verify each provider via live model-list fetch.
+        # Providers marked connected only after successful API response.
         import asyncio
         asyncio.create_task(self.refresh_models())
+        # Chain: after models loaded, clear stale model if its provider
+        # is not connected and update the sidebar.
+        async def _post_refresh() -> None:
+            await asyncio.sleep(0.5)  # give refresh_models time to start
+            model = self.config.model or ""
+            if model and ":" in model:
+                model_provider = model.split(":")[0]
+                if model_provider not in self._connected_providers:
+                    self.config.model = ""
+            self._update_sidebar_providers()
+        asyncio.create_task(_post_refresh())
         # Initialize session store synchronously (libsql is not async)
         self._init_session()
         self.push_screen(ChatScreen())
@@ -287,20 +291,58 @@ class PyHarnessApp(App):
                 pass
 
     async def refresh_models(self) -> None:
-        """Fetch available models from provider APIs and populate the cache.
+        """Verify all configured providers and fetch their model lists.
 
-        Only models from *connected* providers are included — providers
-        in the config that were never connected are excluded.
+        A provider is marked **connected** only after its model-list endpoint
+        responds successfully — not merely because an API key is present.
+        Providers with empty keys or unresolvable ``{env:VAR}`` placeholders
+        are silently skipped.
+
+        After completion, the sidebar provider dots and the ``/models``
+        dropdown are updated to reflect the current state.
         """
-        from pyharness.core.provider import fetch_models
+        import os
 
-        try:
-            self._available_models = await fetch_models(
-                self.config, providers=self._connected_providers
-            )
-        except Exception:
-            self._available_models = []
+        from pyharness.core.provider import _fetch_provider_models
+
+        self._connected_providers.clear()
+        self._available_models = []
+
+        if self.config is None or not self.config.provider:
+            self._model_list_loaded = True
+            self._update_sidebar_providers()
+            return
+
+        for pname, pconf in self.config.provider.items():
+            key = pconf.apiKey or ""
+            base_url = pconf.baseUrl if pconf else None
+
+            # Skip empty keys
+            if not key:
+                self._provider_status[pname] = False
+                continue
+
+            # Resolve {env:VAR} placeholders
+            if key.startswith("{env:") and key.endswith("}"):
+                env_var = key[5:-1]
+                real = os.environ.get(env_var)
+                if not real:
+                    self._provider_status[pname] = False
+                    continue
+                key = real
+
+            # Live verification via model-list fetch
+            try:
+                models = await _fetch_provider_models(pname, key, base_url)
+                self._connected_providers.add(pname)
+                self._provider_status[pname] = True
+                self._available_models.extend(models)
+            except Exception:
+                self._provider_status[pname] = False
+
+        self._available_models = sorted(set(self._available_models))
         self._model_list_loaded = True
+        self._update_sidebar_providers()
 
     def _update_sidebar_providers(self) -> None:
         """Push current provider status to the sidebar widget."""
@@ -338,16 +380,12 @@ class PyHarnessApp(App):
                     pass
 
     def _populate_connected_providers(self) -> None:
-        """Populate ``_connected_providers`` and ``_provider_status`` from config.
+        """Initialise ``_provider_status`` from config keys.
 
-        A provider is considered "connected" when:
-        - Its ``apiKey`` is a non-empty, non-placeholder string,
-          OR
-        - Its ``apiKey`` is an ``{env:VAR}`` placeholder and the
-          referenced environment variable is set.
-
-        Also sets ``_provider_status`` so the sidebar reflects
-        connection state on startup.
+        Does NOT mark providers as connected — that happens asynchronously
+        in :meth:`refresh_models` after live model-list verification.
+        This method only pre-populates the status dict so the sidebar
+        can show "pending" state for providers with keys.
         """
         import os
 
@@ -358,19 +396,13 @@ class PyHarnessApp(App):
             key = pconf.apiKey or ""
             if not key:
                 self._provider_status[pname] = False
-                continue
-            # Skip placeholders unless the env var is set
-            if key.startswith("{env:") and key.endswith("}"):
-                env_var = key[5:-1]  # strip "{env:" prefix and "}" suffix
-                if os.environ.get(env_var):
-                    self._connected_providers.add(pname)
-                    self._provider_status[pname] = True
-                else:
-                    self._provider_status[pname] = False
+            elif key.startswith("{env:") and key.endswith("}"):
+                env_var = key[5:-1]
+                self._provider_status[pname] = bool(os.environ.get(env_var))
             else:
-                # Non-placeholder, non-empty key → connected
-                self._connected_providers.add(pname)
-                self._provider_status[pname] = True
+                # Has a key — but not verified yet.
+                # refresh_models() will set the real status after live check.
+                pass
 
     @property
     def current_agent(self) -> str:
@@ -418,26 +450,19 @@ class PyHarnessApp(App):
             self._config_loaded_from_disk = True
             # Parse provider name from "Connected to <provider>"
             provider_name = result.replace("Connected to ", "")
-            self._provider_status[provider_name] = True
-            self._connected_providers.add(provider_name)
-
-            # If current model is from a different provider, reset it.
-            # The user just connected to a new provider — they haven't
-            # selected a model for it yet.
+            # Refresh models — this live-verifies the new provider and
+            # updates _connected_providers, _provider_status, sidebar.
+            self.call_later(self.refresh_models)
+            # Reset model if switching to a different provider
             model = self.config.model or ""
-            if model:
-                old_provider = model.split(":")[0] if ":" in model else ""
+            if model and ":" in model:
+                old_provider = model.split(":")[0]
                 if old_provider and old_provider != provider_name:
                     self.config.model = ""
                     from pyharness.config.loader import save_config
                     save_config(self.config)
-
             self.notify(result, timeout=3)
-            # Refresh models from THIS provider only — now that it's connected
-            self.call_later(self.refresh_models)
-            # Update sidebar provider status
             self._update_sidebar_providers()
-            # Update status bar to reflect new provider (and blanked model)
             self.update_status_bar()
 
     def action_quit(self) -> None:

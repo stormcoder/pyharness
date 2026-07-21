@@ -363,10 +363,10 @@ class TestLoggingConfig:
             "FAILS: PyHarnessConfig type hints don't include 'log_level'."
         )
 
-        # Check default value is None
+        # Check default value is "INFO" (logging enabled by default for diagnostics)
         field = fields["log_level"]
-        assert field.default is None, (
-            f"FAILS: log_level default must be None, got {field.default!r}"
+        assert field.default == "INFO", (
+            f"FAILS: log_level default must be 'INFO', got {field.default!r}"
         )
 
     # ------------------------------------------------------------------
@@ -389,8 +389,10 @@ class TestLoggingConfig:
 
         if "log_level" in PyHarnessConfig.model_fields:
             actual = config.log_level  # type: ignore[attr-defined]
-            assert actual == value, (
-                f"FAILS: log_level was {actual!r}, expected {value!r}"
+            # When value=None, data={} uses the schema default ("INFO")
+            expected = value if value is not None else "INFO"
+            assert actual == expected, (
+                f"FAILS: log_level was {actual!r}, expected {expected!r}"
             )
         else:
             pytest.fail(
