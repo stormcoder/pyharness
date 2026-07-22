@@ -13,9 +13,9 @@ from pathlib import Path
 from rich.markdown import Markdown as RichMarkdown
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
-from textual.events import Key
+from textual.events import Key, MouseDown, MouseUp
 from textual.screen import Screen
-from textual.widgets import Input, RichLog
+from textual.widgets import Input, RichLog, TextArea
 
 from pyharness.tui.widgets.input import PromptInput
 from pyharness.tui.widgets.sidebar import Sidebar
@@ -88,6 +88,10 @@ class ChatScreen(Screen):
                 rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
                 rich_log.can_focus = False  # CRITICAL: prevents tab focus stealing
                 yield rich_log
+                # Selection overlay — hidden TextArea for mouse text selection
+                select_area = TextArea(id="select-overlay", read_only=True, show_line_numbers=False)
+                select_area.display = False
+                yield select_area
                 with Container(id="input-area"):
                     yield PromptInput(
                         placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
@@ -134,6 +138,57 @@ class ChatScreen(Screen):
                 self.notify("Nothing to copy", timeout=2, severity="warning")
         except Exception:
             self.notify("Copy failed", timeout=2, severity="error")
+
+    # -- Mouse text selection (click-drag on output → auto-copy) -----------
+
+    def _get_chat_plain_text(self) -> str:
+        """Extract plain text from the RichLog chat area."""
+        try:
+            area = self.query_one("#chat-area", RichLog)
+            lines: list[str] = []
+            for strip in area.lines:
+                text = "".join(segment.text for segment in strip)
+                lines.append(text)
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def on_rich_log_mouse_down(self, event: events.MouseDown) -> None:
+        """Activate selection overlay when clicking on the chat output."""
+        if event.widget is None or event.widget.id != "chat-area":
+            return
+        try:
+            overlay = self.query_one("#select-overlay", TextArea)
+            overlay.load_text(self._get_chat_plain_text())
+            overlay.display = True
+            overlay.focus()
+        except Exception:
+            pass
+
+    def on_rich_log_mouse_up(self, event: events.MouseUp) -> None:
+        """On mouse up in selection mode: copy selected text, hide overlay."""
+        try:
+            overlay = self.query_one("#select-overlay", TextArea)
+            if not overlay.display:
+                return
+            selected = overlay.selected_text
+            if selected.strip():
+                self.app.copy_to_clipboard(selected)
+                self.notify("[#7ee787]Copied[/]", timeout=2)
+            overlay.display = False
+        except Exception:
+            pass
+
+    def _on_key_cancel_selection(self, event: events.Key) -> None:
+        """Escape dismisses the selection overlay without copying."""
+        try:
+            overlay = self.query_one("#select-overlay", TextArea)
+            if overlay.display:
+                overlay.display = False
+                event.stop()
+                event.prevent_default()
+        except Exception:
+            pass
 
     def update_status(self, text: str) -> None:
         """Update the status bar text."""
@@ -714,11 +769,23 @@ class ChatScreen(Screen):
     # Arrow keys while /models dropdown is visible navigate it; Escape dismisses.
 
     def _on_key(self, event: Key) -> None:
-        """Intercept keyboard events when the models dropdown is visible.
+        """Intercept keyboard events for selection cancel and models dropdown.
 
         NOTE: Named ``_on_key`` (with underscore) deliberately — in Textual
         this is NOT a message handler (``on_key`` without underscore is).
         """
+        # Escape cancels text selection overlay first
+        if event.key == "escape":
+            try:
+                overlay = self.query_one("#select-overlay", TextArea)
+                if overlay.display:
+                    overlay.display = False
+                    event.stop()
+                    event.prevent_default()
+                    return
+            except Exception:
+                pass
+
         dropdown = self._get_models_dropdown()
         if dropdown is None or not dropdown.has_class("-visible"):
             return

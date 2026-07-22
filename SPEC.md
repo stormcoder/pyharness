@@ -1154,12 +1154,22 @@ The chat output area renders responses with full Rich markup formatting.
 - Headers with proper sizing
 - Inline code with backtick styling
 
-**Copy support**: `Ctrl+Shift+C` extracts all chat text from RichLog as plain text and copies it to the system clipboard via `pyperclip`.
+**Text selection**: Click-and-drag on the chat output opens a read-only `TextArea` overlay populated with the plain-text content of the RichLog.  The overlay covers the chat area exactly, giving the appearance of selecting text directly in the output pane.
+
+**Auto-copy on selection**: When the user releases the mouse button (completing a selection), the selected text is copied to the system clipboard, the overlay is dismissed, and a tooltip notification shows **"Copied"** for 2 seconds.  No extra keystroke required — ``Ctrl+Shift+C`` remains available for "copy all" as a fallback.
+
+**Selection lifecycle**:
+1. `MouseDown` on RichLog → extract plain text, show `TextArea` overlay
+2. `MouseMove` (drag) → TextArea's native selection tracks the mouse
+3. `MouseUp` → `self.app.copy_to_clipboard(selected)`, dismiss overlay, notify **"Copied"**
+4. `Escape` → dismiss overlay without copying
 
 **Keybinds**:
 | Key | Action |
 |-----|--------|
 | `Ctrl+Shift+C` | Copy entire chat content to clipboard |
+| Click-drag on output | Select text → auto-copy on mouse release |
+| `Escape` (during selection) | Cancel selection without copying |
 | `j`/`k` | Scroll chat (vim) |
 | `gg`/`G` | Top/bottom of chat |
 ### 14.4 Status Bar

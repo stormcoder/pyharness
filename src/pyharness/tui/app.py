@@ -67,6 +67,14 @@ class PyHarnessApp(App):
         background: #0d1117;
     }
 
+    #select-overlay {
+        height: 1fr;
+        overflow-y: auto;
+        padding: 1 2;
+        border: none;
+        background: #0d1117;
+    }
+
     #input-area {
         height: auto;
         min-height: 3;

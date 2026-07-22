@@ -541,11 +541,22 @@ class TestRichLogCompose:
             "RichLog" in source.split("from textual.widgets")[1].split("\n")[0]
         ), "RichLog must be imported in compose"
 
-    def test_compose_does_not_import_textarea(self) -> None:
-        """ChatScreen.compose source must NOT reference TextArea."""
+    def test_compose_textarea_only_for_selection_overlay(self) -> None:
+        """ChatScreen.compose may reference TextArea only for the selection overlay.
+
+        The primary chat output MUST be RichLog.  TextArea is now allowed
+        exclusively for the hidden ``#select-overlay`` widget used for
+        mouse-driven text selection.
+        """
         source = inspect.getsource(ChatScreen.compose)
-        assert "TextArea" not in source, (
-            "ChatScreen.compose must NOT reference TextArea (use RichLog)"
+        assert "RichLog" in source, (
+            "ChatScreen.compose must use RichLog for primary chat output"
+        )
+        assert 'TextArea(id="select-overlay"' in source, (
+            "ChatScreen.compose must contain hidden TextArea for mouse text selection"
+        )
+        assert "select_area.display = False" in source, (
+            "Selection overlay must start hidden (display=False)"
         )
 
     def test_compose_does_not_reference_deleted_symbols(self) -> None:
@@ -688,4 +699,92 @@ class TestTokenBufferingFlow:
             "AgentManager" not in str(inspect.getsource(ChatScreen._run_agent))
         ), (
             "'_render_markdown' or equivalent formatting must be available"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. Mouse text selection feature (source-level verification)
+# ---------------------------------------------------------------------------
+
+
+class TestMouseTextSelection:
+    """Verify mouse text selection methods exist on ChatScreen."""
+
+    def test_get_chat_plain_text_method_exists(self) -> None:
+        """ChatScreen must have _get_chat_plain_text method."""
+        assert hasattr(ChatScreen, "_get_chat_plain_text"), (
+            "ChatScreen must implement _get_chat_plain_text for selection overlay"
+        )
+
+    def test_on_rich_log_mouse_down_method_exists(self) -> None:
+        """ChatScreen must have on_rich_log_mouse_down event handler."""
+        assert hasattr(ChatScreen, "on_rich_log_mouse_down"), (
+            "ChatScreen must implement on_rich_log_mouse_down for selection start"
+        )
+
+    def test_on_rich_log_mouse_up_method_exists(self) -> None:
+        """ChatScreen must have on_rich_log_mouse_up event handler."""
+        assert hasattr(ChatScreen, "on_rich_log_mouse_up"), (
+            "ChatScreen must implement on_rich_log_mouse_up for copy-to-clipboard"
+        )
+
+    def test_mouse_down_activates_overlay(self) -> None:
+        """Mouse down handler must show the selection overlay."""
+        source = inspect.getsource(ChatScreen.on_rich_log_mouse_down)
+        assert 'overlay.display = True' in source or 'overlay.display=True' in source, (
+            "on_rich_log_mouse_down must set overlay.display = True"
+        )
+
+    def test_mouse_down_loads_plain_text(self) -> None:
+        """Mouse down handler must load plain text into the overlay."""
+        source = inspect.getsource(ChatScreen.on_rich_log_mouse_down)
+        assert "_get_chat_plain_text" in source, (
+            "on_rich_log_mouse_down must call _get_chat_plain_text to populate overlay"
+        )
+        assert "load_text" in source, (
+            "on_rich_log_mouse_down must call overlay.load_text()"
+        )
+
+    def test_mouse_up_copies_to_clipboard(self) -> None:
+        """Mouse up handler must call self.app.copy_to_clipboard()."""
+        source = inspect.getsource(ChatScreen.on_rich_log_mouse_up)
+        assert "copy_to_clipboard" in source, (
+            "on_rich_log_mouse_up must call self.app.copy_to_clipboard()"
+        )
+        assert "overlay.selected_text" in source, (
+            "on_rich_log_mouse_up must read overlay.selected_text"
+        )
+
+    def test_mouse_up_hides_overlay(self) -> None:
+        """Mouse up handler must hide the selection overlay."""
+        source = inspect.getsource(ChatScreen.on_rich_log_mouse_up)
+        assert "overlay.display = False" in source or "overlay.display=False" in source, (
+            "on_rich_log_mouse_up must set overlay.display = False"
+        )
+
+    def test_copied_notification_shown(self) -> None:
+        """Mouse up handler must show 'Copied' notification."""
+        source = inspect.getsource(ChatScreen.on_rich_log_mouse_up)
+        assert "Copied" in source, (
+            "on_rich_log_mouse_up must show a 'Copied' notification"
+        )
+        assert "self.notify" in source, (
+            "on_rich_log_mouse_up must call self.notify() for the 'Copied' message"
+        )
+
+    def test_escape_key_cancels_selection(self) -> None:
+        """Escape key must hide the selection overlay without copying."""
+        source = inspect.getsource(ChatScreen._on_key)
+        assert 'overlay.display' in source, (
+            "_on_key must check overlay.display to cancel selection"
+        )
+        assert 'overlay.display = False' in source or 'overlay.display=False' in source, (
+            "_on_key must set overlay.display = False on Escape"
+        )
+
+    def test_compose_has_select_overlay(self) -> None:
+        """ChatScreen.compose must create TextArea(id='select-overlay')."""
+        source = inspect.getsource(ChatScreen.compose)
+        assert 'TextArea(id="select-overlay"' in source, (
+            "ChatScreen.compose must create TextArea with id='select-overlay'"
         )
