@@ -46,11 +46,7 @@ def _setup_store(app: PyHarnessApp) -> SessionStore:
     sessions_dir.mkdir(parents=True, exist_ok=True)
     db_path = sessions_dir / "sessions.db"
     store = SessionStore(db_path)
-    try:
-        store.initialize()
-    except Exception:
-        store.close()
-        pytest.skip("libsql not available")
+    store.initialize()
     app._session_store = store
     return store
 

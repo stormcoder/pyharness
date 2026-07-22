@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from pyharness.core.session import Message, Session, SessionStore
 
 # ---------------------------------------------------------------------------
@@ -36,22 +34,21 @@ def _make_message(**overrides) -> Message:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_initialize_creates_tables(store: SessionStore) -> None:
+def test_initialize_creates_tables(store: SessionStore) -> None:
     """After initialization, schema_version and sessions tables must exist."""
     db = store._db
-    cursor = await db.execute(
+    cursor = db.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     )
-    tables = [row["name"] for row in await cursor.fetchall()]
+    tables = [row[0] for row in cursor.fetchall()]
 
     assert "schema_version" in tables
     assert "sessions" in tables
     assert "messages" in tables
 
     # Verify WAL mode is active
-    cursor = await db.execute("PRAGMA journal_mode")
-    row = await cursor.fetchone()
+    cursor = db.execute("PRAGMA journal_mode")
+    row = cursor.fetchone()
     assert row is not None
     assert row[0].lower() == "wal"
 
@@ -61,16 +58,15 @@ async def test_initialize_creates_tables(store: SessionStore) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_create_and_get_session(store: SessionStore) -> None:
+def test_create_and_get_session(store: SessionStore) -> None:
     """Creating a session and retrieving it by ID should work round-trip."""
     s = _make_session()
-    created = await store.create_session(s)
+    created = store.create_session(s)
 
     assert created.id == s.id
     assert created.title == "Test Session"
 
-    loaded = await store.get_session(s.id)
+    loaded = store.get_session(s.id)
     assert loaded is not None
     assert loaded.id == s.id
     assert loaded.title == "Test Session"
@@ -87,11 +83,10 @@ async def test_create_and_get_session(store: SessionStore) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_add_and_retrieve_messages(store: SessionStore) -> None:
+def test_add_and_retrieve_messages(store: SessionStore) -> None:
     """Messages appended to a session should be returned in timestamp order."""
     s = _make_session()
-    await store.create_session(s)
+    store.create_session(s)
 
     msg1 = _make_message(role="user", content="First message")
     msg2 = _make_message(role="assistant", content="Second message")
@@ -104,11 +99,11 @@ async def test_add_and_retrieve_messages(store: SessionStore) -> None:
         token_count=42,
     )
 
-    await store.add_message(s.id, msg1)
-    await store.add_message(s.id, msg2)
-    await store.add_message(s.id, msg3)
+    store.add_message(s.id, msg1)
+    store.add_message(s.id, msg2)
+    store.add_message(s.id, msg3)
 
-    loaded = await store.get_session(s.id)
+    loaded = store.get_session(s.id)
     assert loaded is not None
     assert len(loaded.messages) == 3
 
@@ -133,20 +128,19 @@ async def test_add_and_retrieve_messages(store: SessionStore) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_list_sessions_filtered_by_project(store: SessionStore) -> None:
+def test_list_sessions_filtered_by_project(store: SessionStore) -> None:
     """list_sessions should only return sessions for the given project."""
     s1 = _make_session(title="Project A — session 1", project="project-a")
     s2 = _make_session(title="Project A — session 2", project="project-a")
     s3 = _make_session(title="Project B — session 1", project="project-b")
 
-    await store.create_session(s1)
-    await store.create_session(s2)
-    await store.create_session(s3)
+    store.create_session(s1)
+    store.create_session(s2)
+    store.create_session(s3)
 
-    a_sessions = await store.list_sessions(project="project-a")
-    b_sessions = await store.list_sessions(project="project-b")
-    all_sessions = await store.list_sessions()
+    a_sessions = store.list_sessions(project="project-a")
+    b_sessions = store.list_sessions(project="project-b")
+    all_sessions = store.list_sessions()
 
     assert len(a_sessions) == 2
     assert {s.title for s in a_sessions} == {
@@ -165,17 +159,16 @@ async def test_list_sessions_filtered_by_project(store: SessionStore) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_update_session_status(store: SessionStore) -> None:
+def test_update_session_status(store: SessionStore) -> None:
     """Updating a session's status should be reflected on reload."""
     s = _make_session()
-    await store.create_session(s)
+    store.create_session(s)
 
     s.status = "idle"
     s.title = "Updated Title"
-    await store.update_session(s)
+    store.update_session(s)
 
-    loaded = await store.get_session(s.id)
+    loaded = store.get_session(s.id)
     assert loaded is not None
     assert loaded.status == "idle"
     assert loaded.title == "Updated Title"
@@ -186,26 +179,25 @@ async def test_update_session_status(store: SessionStore) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_delete_session_archives(store: SessionStore) -> None:
+def test_delete_session_archives(store: SessionStore) -> None:
     """Deleting a session should mark it as 'archived', not remove it."""
     s = _make_session()
-    await store.create_session(s)
+    store.create_session(s)
 
-    await store.delete_session(s.id)
+    store.delete_session(s.id)
 
     # Direct query confirms archived status (list_sessions defaults to
     # no status filter, but we check the raw status)
-    loaded = await store.get_session(s.id)
+    loaded = store.get_session(s.id)
     assert loaded is not None
     assert loaded.status == "archived"
 
     # Filtering by 'active' should exclude it
-    active = await store.list_sessions(status="active")
+    active = store.list_sessions(status="active")
     assert s.id not in {x.id for x in active}
 
     # Filtering by 'archived' should include it
-    archived = await store.list_sessions(status="archived")
+    archived = store.list_sessions(status="archived")
     assert s.id in {x.id for x in archived}
 
 
@@ -214,10 +206,9 @@ async def test_delete_session_archives(store: SessionStore) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_get_nonexistent_session(store: SessionStore) -> None:
+def test_get_nonexistent_session(store: SessionStore) -> None:
     """Getting a session that doesn't exist should return None."""
-    result = await store.get_session("sess-nonexistent")
+    result = store.get_session("sess-nonexistent")
     assert result is None
 
 
@@ -226,15 +217,14 @@ async def test_get_nonexistent_session(store: SessionStore) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_session_metadata_roundtrip(store: SessionStore) -> None:
+def test_session_metadata_roundtrip(store: SessionStore) -> None:
     """Custom metadata stored on a session should survive round-trip."""
     s = _make_session(
         metadata={"cwd": "/home/user/project", "editor": "vim", "env": {"DEBUG": "1"}}
     )
-    await store.create_session(s)
+    store.create_session(s)
 
-    loaded = await store.get_session(s.id)
+    loaded = store.get_session(s.id)
     assert loaded is not None
     assert loaded.metadata == {
         "cwd": "/home/user/project",

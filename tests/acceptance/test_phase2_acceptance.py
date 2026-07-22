@@ -441,29 +441,24 @@ class TestSessionManagement:
 
     def test_session_store_create_and_list(self, tmp_db_path: Path):
         """Session store must support create, list operations."""
-        import asyncio
-
         from pyharness.core.session import Session, SessionStore
 
-        async def _run():
-            store = SessionStore(tmp_db_path)
-            await store.initialize()
-            try:
-                sess = Session(
-                    agent="build",
-                    model="anthropic:claude-sonnet-4-5",
-                )
-                created = await store.create_session(sess)
-                assert created is not None
-                assert created.id is not None
-                assert created.status == "active"
+        store = SessionStore(tmp_db_path)
+        store.initialize()
+        try:
+            sess = Session(
+                agent="build",
+                model="anthropic:claude-sonnet-4-5",
+            )
+            created = store.create_session(sess)
+            assert created is not None
+            assert created.id is not None
+            assert created.status == "active"
 
-                sessions = await store.list_sessions()
-                assert len(sessions) >= 1
-            finally:
-                await store.close()
-
-        asyncio.run(_run())
+            sessions = store.list_sessions()
+            assert len(sessions) >= 1
+        finally:
+            store.close()
 
     def test_child_session_parent_link(self):
         """Phase 2: child sessions should be linked to parent sessions."""

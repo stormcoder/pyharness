@@ -212,10 +212,7 @@ class TestAppTabManagement:
             sessions_dir.mkdir(parents=True, exist_ok=True)
             db_path = sessions_dir / "sessions.db"
             store = SessionStore(db_path)
-            try:
-                store.initialize()
-            except Exception:
-                pytest.skip("libsql not available")
+            store.initialize()
             app._session_store = store
 
             initial_count = len(app._session_order)
@@ -372,12 +369,7 @@ class TestMultiTabIntegration:
         sessions_dir.mkdir(parents=True, exist_ok=True)
         db_path = sessions_dir / "sessions.db"
         store = SessionStore(db_path)
-        try:
-            store.initialize()
-        except Exception:
-            store.close()
-            pytest.skip("libsql not available")
-
+        store.initialize()
         app._session_store = store
         async with app.run_test() as pilot:
             await pilot.pause()

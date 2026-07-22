@@ -159,7 +159,7 @@ class SessionStore:
         self._conn: turso.Connection | None = None
 
     @property
-    def _db(self) -> libsql.Connection:
+    def _db(self) -> turso.Connection:
         if self._conn is None:
             raise RuntimeError(
                 "SessionStore not initialized — call store.initialize() first."
@@ -169,7 +169,7 @@ class SessionStore:
     def initialize(self) -> None:
         """Create tables, run migrations.  Idempotent."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = libsql.connect(str(self.db_path))
+        self._conn = turso.connect(str(self.db_path))
         for pragma in PRAGMAS:
             self._conn.execute(pragma)
         self._conn.execute(CREATE_SCHEMA_VERSION)
@@ -358,14 +358,20 @@ def _row_to_session(row: tuple) -> Session:
 
 def _row_to_message(row: tuple) -> Message:
     """Convert a database row to a Message dataclass."""
-    tool_args_raw = row[6]
+    tool_args_raw = row[5]
+    tool_args = None
+    if tool_args_raw and tool_args_raw.strip():
+        try:
+            tool_args = json.loads(tool_args_raw)
+        except (json.JSONDecodeError, TypeError):
+            pass
     return Message(
         id=row[0],
         role=row[2],
         content=row[3],
         tool_name=row[4],
-        tool_args=json.loads(tool_args_raw) if tool_args_raw else None,
-        tool_result=row[5],
+        tool_args=tool_args,
+        tool_result=row[6],
         timestamp=row[7],
         token_count=row[8],
     )

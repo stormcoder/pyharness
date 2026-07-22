@@ -265,7 +265,9 @@ class PyHarnessApp(App):
         asyncio.create_task(_post_refresh())
         # Initialize session store synchronously (libsql is not async)
         self._init_session()
-        self.push_screen(ChatScreen())
+        # Push the tracked ChatScreen from session initialization
+        if self._focused_session_id and self._focused_session_id in self._session_screens:
+            self.push_screen(self._session_screens[self._focused_session_id])
         # Phase 4: mount session tab bar at app level
         self._active_sessions.load()
         tabs = [(e["session_id"], self._session_title(e["session_id"]))
@@ -303,6 +305,7 @@ class PyHarnessApp(App):
                         self._active_sessions.add(session.id, DEFAULT_SCREEN_ID)
                         self._session_order.append(session.id)
                         self._focused_session_id = session.id
+                        self._session_screens[session.id] = ChatScreen()
                         return
                 except Exception:
                     pass
@@ -320,6 +323,7 @@ class PyHarnessApp(App):
             self._active_sessions.add(session.id, DEFAULT_SCREEN_ID)
             self._session_order.append(session.id)
             self._focused_session_id = session.id
+            self._session_screens[session.id] = ChatScreen()
         except Exception:
             pass
 
