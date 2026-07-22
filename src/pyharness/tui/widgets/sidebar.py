@@ -22,6 +22,10 @@ class Sidebar(VerticalScroll):
 
     can_focus = False  # CRITICAL: Never steal focus from input field
 
+    def on_mount(self) -> None:
+        """Load AGENTS.md content when the sidebar first appears."""
+        self.refresh_agents_md()
+
     def compose(self) -> ComposeResult:
         # Section 1: AGENTS.md
         with Container(id="section-agents"):

@@ -168,6 +168,11 @@ class ChatScreen(Screen):
         # Auto-focus the input field so cursor starts in input
         with __import__("contextlib").suppress(Exception):
             self.query_one(PromptInput).focus()
+        # Refresh sidebar AGENTS.md content on startup
+        with __import__("contextlib").suppress(Exception):
+            sidebar = self.query_one("Sidebar")
+            if hasattr(sidebar, "refresh_agents_md"):
+                sidebar.refresh_agents_md()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission.

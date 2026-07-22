@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -11,6 +13,25 @@ from pyharness.core.testing import (
     FakeLLMProvider,
     make_echo_provider,
 )
+
+
+# ---------------------------------------------------------------------------
+# Global config protection
+# ---------------------------------------------------------------------------
+# Redirect ALL save_config calls during tests to a temp file so the
+# user's ~/.config/pyharness/pyharness.json is never overwritten by
+# test suite runs.  Individual tests that need precise control over
+# their config path can override this with patch.dict.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pyharness_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set PYHARNESS_CONFIG to a throwaway temp file for every test."""
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="pyharness_test_")
+    os.close(fd)
+    Path(path).write_text("{}")
+    monkeypatch.setenv("PYHARNESS_CONFIG", path)
 
 # ---------------------------------------------------------------------------
 # Session store fixtures (pre-existing)

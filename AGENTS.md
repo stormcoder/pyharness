@@ -60,6 +60,7 @@ Phases are defined in `SPEC.md` §13 (revised from original 6 → 4 phases):
 
 ## Rules
 
+### Project conventions
 - All config follows `pyharness.json` schema (mirrors `opencode.json`)
 - Agent definitions use markdown frontmatter (same format as OpenCode)
 - Skills use `SKILL.md` files with YAML frontmatter (same format as OpenCode)
@@ -70,3 +71,58 @@ Phases are defined in `SPEC.md` §13 (revised from original 6 → 4 phases):
 - Use `uv run` for all commands: `uv run pyharness`, `uv run pytest`, `uv run ruff check .`
 - All package management uses `uv`: `uv add <pkg>`, `uv lock`, `uv sync`
 - Provider model strings use `provider:model-id` format (e.g. `anthropic:claude-sonnet-4-5`, `openrouter:openai/gpt-5`)
+
+### Code quality & style
+- Always run `uv run ruff check .` before committing code — fix all warnings
+- Always run `uv run mypy .` (or the relevant package) before committing — no `type: ignore` unless unavoidable and commented
+- All public APIs must have type annotations (PEP 484). Use `TYPE_CHECKING` for import guard cycles
+- All public functions, classes, and methods must have docstrings (Google style)
+- Use `structlog` for all logging — never `print()` or `logging` directly
+- Prefer `pathlib.Path` over `os.path` — no bare string path manipulation
+- Use `pydantic` models for all data structures that cross module boundaries
+- Maximum line length: 100 characters (enforced by ruff)
+- Use `from __future__ import annotations` in all Python files to enable postponed evaluation
+
+### Testing
+- Every new feature must include pytest tests — no feature is complete without them
+- Use `pytest-asyncio` for async tests: mark with `@pytest.mark.asyncio(scope="module")`
+- Use `pytest-textual-snapshot` for TUI snapshot testing — never test rendered output by string matching
+- Mock LLM calls with a fixture that returns deterministic responses — never hit real APIs in CI
+- Use temp SQLite databases (`pytest.fixture` with `tmp_path`) for session storage tests
+- Use temp git repos for git middleware tests
+- Prefer property-based testing (`hypothesis`) for config parsing and serialization logic
+- Tests must be hermetic: no network access, no reliance on `~/.local/share/pyharness/` existing
+
+### Git & commits
+- Follow Conventional Commits format: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`, `perf:`, `style:`
+- Keep commits atomic: one logical change per commit
+- Write commit messages explaining *why*, not just *what*
+- Rebase on `main` before opening a PR — no merge commits
+- Never commit to `main` directly — always use feature branches
+
+### Architecture & design
+- Adhere to the layering in `SPEC.md`: Presentation (Textual) → Agent (LangGraph) → Tools → Domain
+- Never import Textual widgets into agent logic — the TUI layer must be replaceable
+- LangGraph nodes should be pure functions where possible; side effects go in Tools
+- Tools must be stateless: all state lives in LangGraph checkpointing or SQLite
+- Use dependency injection for LLM models, storage, and git — never hardcode singletons
+- Async all the way down: use `asyncio` for I/O, never `subprocess.run()` without `asyncio.create_subprocess_exec`
+- Error recovery: every LangGraph node should handle transient failures (retry with backoff for API calls)
+- Graceful degradation: if MemPalace is absent, the agent still works (SQLite fallback)
+
+### Documentation
+- Update `SPEC.md` when a design decision changes — keep it the single source of truth
+- Document every new config option in `SPEC.md` §Configuration
+- Update mockups in `docs/mockups/` when the UI layout changes
+- Keep the feature matrix in `SPEC.md` current — mark implemented features with `[x]`
+- Add a changelog entry under `## Unreleased` when making user-facing changes
+- Document non-trivial LangGraph patterns (subgraphs, checkpointing strategies) in `docs/`
+
+### AI agent behavior
+- Read `SPEC.md` and relevant docs before proposing any implementation
+- When proposing a new dependency, justify it against the existing tech stack — prefer using what's already chosen
+- If a design decision contradicts `SPEC.md`, flag it rather than silently diverging
+- For ambiguous requirements, ask clarifying questions rather than guessing
+- Prefer small, incremental changes over large rewrites — this project follows phased delivery
+- When fixing bugs, first write a failing test that reproduces the issue, then fix the code
+- Keep the AGENTS.md rules up to date — if a rule becomes obsolete, update it

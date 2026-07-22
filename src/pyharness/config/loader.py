@@ -93,14 +93,17 @@ def save_config(config: PyHarnessConfig, target: str = "global") -> None:
         * Provider keys already stored as ``{env:VAR}`` placeholders are
           preserved; newly-added keys are written as plain strings.
     """
-    # Determine the target path
-    env_path = os.environ.get("PYHARNESS_CONFIG")
-    if env_path:
-        config_path = Path(env_path)
-    elif target == "global":
-        config_path = Path.home() / ".config" / "pyharness" / "pyharness.json"
-    else:
+    # Determine the target path.
+    # PYHARNESS_CONFIG overrides only the default global path —
+    # explicit targets (e.g. from test fixtures) are always honoured.
+    if target != "global":
         config_path = Path(target)
+    else:
+        env_path = os.environ.get("PYHARNESS_CONFIG")
+        if env_path:
+            config_path = Path(env_path)
+        else:
+            config_path = Path.home() / ".config" / "pyharness" / "pyharness.json"
 
     # Read the existing file (if any) with json5 to detect env placeholders
     existing: dict[str, Any] = {}
@@ -206,10 +209,29 @@ def _git_root(path: Path) -> Path | None:
 def _merge_configs(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deep-merge *override* into *base*.  Dicts merge recursively;
     lists and scalars are replaced.
+
+    Special case: ``provider`` dicts are merged per-provider so that
+    override wins for directly-specified keys within each provider,
+    while base-only providers survive.
     """
     result = deepcopy(base)
     for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+        if key == "provider" and isinstance(value, dict) and isinstance(result.get(key), dict):
+            # Per-provider merge: for each provider in either base or
+            # override, override keys win but base keys fill gaps.
+            merged_prov: dict[str, Any] = {}
+            all_providers = set(result[key]) | set(value)
+            for pk in all_providers:
+                base_pv = result[key].get(pk, {})
+                ov_pv = value.get(pk, {})
+                if isinstance(base_pv, dict) and isinstance(ov_pv, dict):
+                    merged_prov[pk] = {**base_pv, **ov_pv}
+                elif ov_pv:
+                    merged_prov[pk] = deepcopy(ov_pv)
+                else:
+                    merged_prov[pk] = deepcopy(base_pv)
+            result[key] = merged_prov
+        elif key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _merge_configs(result[key], value)
         else:
             result[key] = deepcopy(value)

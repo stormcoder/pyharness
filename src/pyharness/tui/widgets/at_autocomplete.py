@@ -124,6 +124,7 @@ class AtAutocomplete(Widget):
             return
         self._highlighted = max(0, min(index, len(self._items) - 1))
         self._refresh_highlights()
+        self._scroll_to_highlighted()
 
     def show_dropdown(self) -> None:
         """Make the dropdown visible."""
@@ -132,6 +133,19 @@ class AtAutocomplete(Widget):
     def hide_dropdown(self) -> None:
         """Hide the dropdown."""
         self.remove_class("-visible")
+
+    def _scroll_to_highlighted(self) -> None:
+        """Scroll the list so the highlighted item stays visible."""
+        try:
+            scroll = self.query_one("#at-scroll", VerticalScroll)
+        except Exception:
+            return
+        # Items: header at index 0, then _highlighted + 1 for actual item
+        item_index = self._highlighted + 1
+        children = list(scroll.query("Static.at-item"))
+        if 0 <= item_index - 1 < len(children):
+            target = children[self._highlighted]
+            scroll.scroll_to_widget(target, animate=False)
 
     # -- internal helpers ----------------------------------------------------
 
