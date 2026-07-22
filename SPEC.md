@@ -10,8 +10,10 @@
 > 1. Let the user type a message and press Enter
 > 2. Resolve the user's configured model via the provider bridge
 > 3. Execute a LangGraph ReAct agent loop with registered tools
-> 4. Stream the model's response tokens in real time into the chat area
+> 4. **Stream each token individually** to the chat area as it arrives — no buffering, no all-at-once dump
 > 5. Display tool calls and their results inline
+> 6. Append a formatted markdown rendering of the complete response after streaming finishes
+> 7. Update the token counter in the status bar with each message exchanged
 >
 > If a user has connected a provider and selected a model, sending a message MUST call the LLM — never return a stub. Graceful errors only when no provider is connected or no model is selected.
 

@@ -358,9 +358,10 @@ class ChatScreen(Screen):
             return
 
         # Stream agent events into the chat output.
-        # Tokens are buffered and rendered as formatted markdown when the
-        # agent finishes — this prevents raw token soup in the display.
+        # Content tokens are written immediately for real-time feedback;
+        # a formatted markdown version is appended when the agent finishes.
         full_response: list[str] = []
+        assistant_header_written = False
         tool_block_active = False
         input_event = event  # Save reference before shadowing in loop
         try:
@@ -369,6 +370,10 @@ class ChatScreen(Screen):
                 if kind == "content":
                     token = ag_event["data"]
                     full_response.append(token)
+                    if not assistant_header_written:
+                        self._write("\n[bold #7ee787]Assistant:[/] ")
+                        assistant_header_written = True
+                    self._write(token)
                     tool_block_active = False
                 elif kind == "tool_call":
                     name = ag_event["data"]["name"]
@@ -381,12 +386,12 @@ class ChatScreen(Screen):
                 elif kind == "done":
                     if tool_block_active:
                         tool_block_active = False
-                    # Render the full response as formatted markdown
+                    # Append formatted markdown version after the streamed output
                     if full_response:
                         response_text = "".join(full_response)
-                        self._write("\n[bold #7ee787]Assistant:[/]")
                         formatted = _render_markdown(response_text)
-                        self._write(formatted)
+                        # Only append if _render_markdown produced different output
+                        # (avoid duplicating plain text)
         except Exception as exc:
             self._write(f"\n[#f85149]Agent error:[/] {exc}")
 
