@@ -703,27 +703,24 @@ class TestSidebarProviderStatusOnStartup:
 
 
 class TestAgentSetupTryBlockCoverage:
-    """BUG A: In ``ChatScreen.on_input_submitted``, the try/except block
-    originally only wrapped ``resolve_model()``.  Lines after it
-    (``get_registry().get_all()``, ``create_agent_graph()``,
-    ``AgentRunner()`` constructor) were OUTSIDE the try block, so any
-    failure there dumped a raw traceback to the shell instead of showing
-    an in-chat error message.
+    """BUG A: In ``ChatScreen._run_agent``, the try/except block covers
+    ALL agent setup code: ``resolve_model()``, ``get_registry().get_all()``,
+    ``create_agent_graph()``, and ``AgentRunner()`` constructor.
 
-    FIX: The try block was extended to cover ALL agent setup code:
-    model resolution + tool registry + graph creation + runner
-    instantiation.  The except handler now clears ``event.input.value``
-    (so the input field isn't stuck) and writes "Error setting up agent"
-    to chat.
+    After the input refactor (non-blocking streaming), agent setup moved
+    from ``on_input_submitted`` into the ``_run_agent`` background method.
+    Input clearing now happens in ``on_input_submitted`` BEFORE the agent
+    is launched.  The except handler in ``_run_agent`` writes "Error setting
+    up agent" to chat.
     """
 
     # ------------------------------------------------------------------
-    # TEST A1 — get_registry().get_all() is INSIDE the try block
+    # TEST A1 — get_registry().get_all() is INSIDE the try block in _run_agent
     # ------------------------------------------------------------------
 
     def test_get_registry_get_all_inside_try_block(self) -> None:
-        """``get_registry().get_all()`` must be INSIDE the try block,
-        not after it.
+        """``get_registry().get_all()`` must be INSIDE the try block
+        in ``_run_agent``, not after it.
 
         If this call is outside the try block and the tool registry
         throws, the exception propagates to Textual's event loop and
@@ -733,11 +730,11 @@ class TestAgentSetupTryBlockCoverage:
         import inspect
         from pyharness.tui.screens.chat import ChatScreen
 
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(ChatScreen._run_agent)
 
         # Find "Error setting up agent" message
         assert "Error setting up agent" in source, (
-            "FAILS: 'Error setting up agent' not found in source.\n\n"
+            "FAILS: 'Error setting up agent' not found in _run_agent source.\n\n"
             "  Expected: the except handler writes this message to chat."
         )
 
@@ -746,7 +743,7 @@ class TestAgentSetupTryBlockCoverage:
         if registry_pos < 0:
             registry_pos = source.find("get_registry()")
         assert registry_pos >= 0, (
-            "FAILS: get_registry() call not found in on_input_submitted.\n\n"
+            "FAILS: get_registry() call not found in _run_agent.\n\n"
             "  Expected: get_registry().get_all() to populate tools."
         )
 
@@ -756,7 +753,7 @@ class TestAgentSetupTryBlockCoverage:
         assert resolve_pos >= 0
         try_pos = source[:resolve_pos].rfind("try:")
         assert try_pos >= 0, (
-            "FAILS: try: not found before resolve_model in on_input_submitted."
+            "FAILS: try: not found before resolve_model in _run_agent."
         )
 
         # Find the 'except' keyword after resolve_model
@@ -773,12 +770,12 @@ class TestAgentSetupTryBlockCoverage:
         )
 
     # ------------------------------------------------------------------
-    # TEST A2 — create_agent_graph() is INSIDE the try block
+    # TEST A2 — create_agent_graph() is INSIDE the try block in _run_agent
     # ------------------------------------------------------------------
 
     def test_create_agent_graph_inside_try_block(self) -> None:
         """``create_agent_graph(model, tools)`` must be INSIDE the try
-        block, not after it.
+        block in ``_run_agent``, not after it.
 
         If graph compilation fails, the error must appear in-chat
         as "Error setting up agent", not a raw traceback.
@@ -786,7 +783,7 @@ class TestAgentSetupTryBlockCoverage:
         import inspect
         from pyharness.tui.screens.chat import ChatScreen
 
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(ChatScreen._run_agent)
 
         # Locate by resolve_model anchor
         resolve_pos = source.find("resolve_model")
@@ -799,7 +796,7 @@ class TestAgentSetupTryBlockCoverage:
 
         graph_pos = source.find("create_agent_graph")
         assert graph_pos >= 0, (
-            "FAILS: create_agent_graph call not found in on_input_submitted.\n\n"
+            "FAILS: create_agent_graph call not found in _run_agent.\n\n"
             "  Expected: create_agent_graph(model, tools) inside try block."
         )
 
@@ -813,11 +810,12 @@ class TestAgentSetupTryBlockCoverage:
         )
 
     # ------------------------------------------------------------------
-    # TEST A3 — AgentRunner() constructor is INSIDE the try block
+    # TEST A3 — AgentRunner() constructor is INSIDE the try block in _run_agent
     # ------------------------------------------------------------------
 
     def test_agent_runner_constructor_inside_try_block(self) -> None:
-        """``AgentRunner()`` construction must be INSIDE the try block.
+        """``AgentRunner()`` construction must be INSIDE the try block
+        in ``_run_agent``.
 
         If the AgentRunner constructor raises (e.g. missing checkpoint
         adapter), the error must appear in-chat.
@@ -825,7 +823,7 @@ class TestAgentSetupTryBlockCoverage:
         import inspect
         from pyharness.tui.screens.chat import ChatScreen
 
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(ChatScreen._run_agent)
 
         # Locate by resolve_model anchor
         resolve_pos = source.find("resolve_model")
@@ -838,7 +836,7 @@ class TestAgentSetupTryBlockCoverage:
 
         runner_pos = source.find("AgentRunner(")
         assert runner_pos >= 0, (
-            "FAILS: AgentRunner() call not found in on_input_submitted.\n\n"
+            "FAILS: AgentRunner() call not found in _run_agent.\n\n"
             "  Expected: runner = AgentRunner(graph, ...) inside try block."
         )
 
@@ -852,38 +850,36 @@ class TestAgentSetupTryBlockCoverage:
         )
 
     # ------------------------------------------------------------------
-    # TEST A4 — except handler clears event.input.value
+    # TEST A4 — input is cleared in on_input_submitted before agent setup
     # ------------------------------------------------------------------
 
     def test_except_handler_clears_input_value(self) -> None:
-        """The except handler MUST clear ``event.input.value = \"\"``
-        so the input field is not stuck with unsubmitted text after
-        an agent setup failure.
+        """After the input refactor, ``on_input_submitted`` clears
+        ``event.input.value`` at the TOP of the normal chat flow,
+        BEFORE launching the background agent task.
+
+        The except handler in ``_run_agent`` writes an error message
+        to chat — no need to clear input because it was already cleared.
         """
         import inspect
         from pyharness.tui.screens.chat import ChatScreen
 
         source = inspect.getsource(ChatScreen.on_input_submitted)
 
-        # Find the "Error setting up agent" except clause.
-        # Look for event.input.value = "" AFTER the except line and
-        # BEFORE any return within that handler.
-        except_pos = source.find("except")
-
-        # Slice the source from except_pos to end — find event.input.value
-        # within that region
-        after_except = source[except_pos:]
-        assert "event.input.value" in after_except, (
-            "FAILS: except handler does NOT clear event.input.value.\n\n"
-            "  Expected: `event.input.value = \"\"` in the except handler\n"
-            "  so the user can type a new message.  Without this, the\n"
-            "  input field stays populated with the failed message."
+        # Input is cleared at the top of the normal chat flow
+        # (line 331: event.input.value = "")
+        assert 'event.input.value = ""' in source or "event.input.value = ''" in source, (
+            "FAILS: on_input_submitted must clear event.input.value.\n\n"
+            "  Expected: `event.input.value = \"\"` in on_input_submitted\n"
+            "  to clear input immediately before launching the agent."
         )
 
-        # Verify it's a clearing assignment (empty string)
-        assert 'event.input.value = ""' in source or "event.input.value = ''" in source, (
-            "FAILS: event.input.value is referenced but not cleared to empty.\n\n"
-            "  Expected: `event.input.value = \"\"` in the except handler."
+        # Also verify _run_agent has the error handler
+        run_source = inspect.getsource(ChatScreen._run_agent)
+        assert "Error setting up agent" in run_source, (
+            "FAILS: 'Error setting up agent' not found in _run_agent.\n\n"
+            "  Expected: the except handler in _run_agent writes this\n"
+            "  message to chat when agent setup fails."
         )
 
     # ------------------------------------------------------------------
@@ -891,16 +887,17 @@ class TestAgentSetupTryBlockCoverage:
     # ------------------------------------------------------------------
 
     def test_except_handler_writes_error_message(self) -> None:
-        """The except handler must write 'Error setting up agent'
-        to the chat output so the user sees what went wrong.
+        """The except handler in ``_run_agent`` must write
+        'Error setting up agent' to the chat output so the user
+        sees what went wrong.
         """
         import inspect
         from pyharness.tui.screens.chat import ChatScreen
 
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(ChatScreen._run_agent)
 
         assert "Error setting up agent" in source, (
-            "FAILS: 'Error setting up agent' not found in source.\n\n"
+            "FAILS: 'Error setting up agent' not found in _run_agent source.\n\n"
             "  Expected: the except handler writes this message to chat\n"
             "  so the user understands that agent setup failed, rather\n"
             "  than seeing a silent failure or shell traceback."

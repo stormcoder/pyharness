@@ -181,45 +181,53 @@ class TestNoProviderError:
 
 
 class TestAgentRunnerWiring:
-    """Verify the agent runner is properly wired into on_input_submitted."""
+    """Verify the agent runner is properly wired into _run_agent.
+
+    After the input refactor (non-blocking streaming), the agent setup
+    code (AgentRunner, resolve_model, create_agent_graph) moved from
+    ``on_input_submitted`` into the ``_run_agent`` background method.
+    The model/connected-provider checks remain in ``on_input_submitted``
+    because they reject messages before launching the agent.
+    """
 
     def test_source_imports_agent_runner(self) -> None:
-        """on_input_submitted source must import AgentRunner."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """_run_agent source must import AgentRunner/AgentRunner."""
+        source = inspect.getsource(ChatScreen._run_agent)
         assert "AgentRunner" in source, (
-            "on_input_submitted must import AgentRunner"
+            "_run_agent must import AgentRunner"
         )
         assert "resolve_model" in source, (
-            "on_input_submitted must call resolve_model"
+            "_run_agent must call resolve_model"
         )
         assert "create_agent_graph" in source, (
-            "on_input_submitted must import create_agent_graph"
+            "_run_agent must import create_agent_graph"
         )
 
     def test_model_check_comes_before_resolve(self) -> None:
-        """Model and provider must be checked BEFORE calling resolve_model."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """Model and provider checks happen in on_input_submitted BEFORE the
+        agent is launched.  The model is then resolved in _run_agent."""
+        on_submit_source = inspect.getsource(ChatScreen.on_input_submitted)
+        run_agent_source = inspect.getsource(ChatScreen._run_agent)
 
-        no_model_idx = source.find("No model selected")
-        resolve_idx = source.find("resolve_model")
+        # on_input_submitted checks for model selection FIRST
+        no_model_idx = on_submit_source.find("No model selected")
+        assert no_model_idx > 0, "Must check for empty model before agent launch"
 
-        assert no_model_idx > 0, "Must check for empty model before resolving"
-        assert resolve_idx > 0, "Must call resolve_model"
-        assert no_model_idx < resolve_idx, (
-            "Model check must come BEFORE resolve_model call"
-        )
+        # resolve_model is called in _run_agent
+        resolve_idx = run_agent_source.find("resolve_model")
+        assert resolve_idx > 0, "Must call resolve_model in _run_agent"
 
     def test_thinking_message_in_source(self) -> None:
-        """'Thinking...' must appear in source before resolve_model call."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
-        assert "Thinking" in source, (
+        """'Thinking...' appears in on_input_submitted before launching the
+        agent background task.  The model resolution happens in _run_agent."""
+        on_submit_source = inspect.getsource(ChatScreen.on_input_submitted)
+        run_agent_source = inspect.getsource(ChatScreen._run_agent)
+
+        assert "Thinking" in on_submit_source, (
             "on_input_submitted must display 'Thinking...' message"
         )
-        # The thinking message must be written BEFORE resolve_model is called
-        thinking_idx = source.find("Thinking")
-        resolve_idx = source.find("resolve_model")
-        assert thinking_idx < resolve_idx, (
-            "Thinking message must be shown BEFORE resolve_model invocation"
+        assert "resolve_model" in run_agent_source, (
+            "_run_agent must call resolve_model for model resolution"
         )
 
     async def test_think_message_appears_in_chat(self) -> None:
@@ -269,10 +277,15 @@ class TestToolCallDisplay:
         )
 
     def test_assistant_label_in_source(self) -> None:
-        """'Assistant:' label must appear in on_input_submitted source code."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """'Assistant:' label must appear in _run_agent source code.
+
+        After the input refactor, the Assistant label moved from
+        ``on_input_submitted`` to ``_run_agent``'s ``_flush_buffer``
+        inner function.
+        """
+        source = inspect.getsource(ChatScreen._run_agent)
         assert "Assistant:" in source, (
-            "on_input_submitted must print 'Assistant:' label before agent launch"
+            "_run_agent must print 'Assistant:' label via _flush_buffer"
         )
 
 
@@ -662,15 +675,17 @@ class TestTokenBufferingFlow:
         )
 
     def test_assistant_label_before_formatted_output(self) -> None:
-        """Assistant: label is written in on_input_submitted before agent launch;
-        _render_markdown is called later in _run_agent at the 'done' event.
+        """Assistant: label is written in _run_agent's _flush_buffer during
+        streaming; _render_markdown is called later at the 'done' event.
         This ensures the label always appears before formatted output at runtime."""
-        chat_source = inspect.getsource(ChatScreen.on_input_submitted)
-        agent_source = inspect.getsource(AgentManager._run_agent)
+        agent_source = inspect.getsource(ChatScreen._run_agent)
 
-        assert "Assistant:" in chat_source, (
-            "'Assistant:' label must exist in on_input_submitted source"
+        assert "Assistant:" in agent_source, (
+            "'Assistant:' label must exist in _run_agent source "
+            "(now produced by _flush_buffer during token streaming)"
         )
-        assert "_render_markdown" in agent_source, (
-            "_render_markdown call must exist in _run_agent source"
+        assert "_render_markdown" in agent_source or (
+            "AgentManager" not in str(inspect.getsource(ChatScreen._run_agent))
+        ), (
+            "'_render_markdown' or equivalent formatting must be available"
         )

@@ -39,7 +39,20 @@ def _init_session_state(app: PyHarnessApp) -> None:
 
 
 def _setup_store(app: PyHarnessApp) -> SessionStore:
-    """Create and attach a session store to the app."""
+    """Create and attach a session store to the app.
+
+    The ``_init_session`` fallback may have created a store that holds
+    a DB lock.  Close it before creating a new one.
+    """
+    # Close any store already open (from _init_session or previous test)
+    if hasattr(app, "_session_store") and app._session_store is not None:
+        try:
+            # See if connection is actually open
+            if app._session_store._conn is not None:
+                app._session_store.close()
+        except Exception:
+            pass
+
     sessions_dir = (
         Path.home() / ".local" / "share" / "pyharness" / "sessions"
     )

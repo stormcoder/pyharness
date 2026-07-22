@@ -325,9 +325,10 @@ class ChatScreen(Screen):
         # --- Normal chat message ---
         self._write(f"\n[bold #58a6ff]You:[/] {user_msg}")
 
-        # Record in input history
+        # Record in input history and clear input IMMEDIATELY
         inp = self.query_one(PromptInput)
         inp.push_history(user_msg)
+        event.input.value = ""
 
         # Check for @ file references and load file content
         at_refs = re.findall(r"@([\w._/-]+)", user_msg)
@@ -355,7 +356,6 @@ class ChatScreen(Screen):
                 "Use [bold]/connect[/] to add a provider, "
                 "then [bold]/models[/] to pick a model."
             )
-            event.input.value = ""
             return
 
         # Check that we have at least one connected provider
@@ -364,17 +364,18 @@ class ChatScreen(Screen):
                 "[#f85149]Error:[/] No provider connected. "
                 "Use [bold]/connect[/] to add a provider API key."
             )
-            event.input.value = ""
             return
 
         self._write("[#d29922]⏳ Thinking...[/]")
 
-        # Set up the agent graph and runner — all inside a single try block
-        # so that any crash (import error, tool registry failure, graph
-        # compilation failure) is caught and surfaced in-chat rather than
-        # dumping a traceback to the terminal.
-        runner: object = None
-        session_id: str = ""
+        # Launch the agent as a background task so the UI stays responsive.
+        # Input is already cleared — the user can type the next message
+        # while the agent is running in the background.
+        import asyncio
+        asyncio.create_task(self._run_agent(user_msg, model_id))
+
+    async def _run_agent(self, user_msg: str, model_id: str) -> None:
+        """Resolve model, run agent, stream output — all in background."""
         try:
             from pyharness.core.provider import resolve_model
             from pyharness.core.agent import AgentRunner, create_agent_graph
@@ -387,50 +388,53 @@ class ChatScreen(Screen):
             graph = create_agent_graph(model, tools)
             runner = AgentRunner(graph, session_id, agent_name, model_id)
         except Exception as exc:
-            self._write(f"[#f85149]Error setting up agent:[/] {exc}")
-            event.input.value = ""
+            self._write(f"\n[#f85149]Error setting up agent:[/] {exc}")
             return
 
-        # Stream agent events into the chat output.
-        # Content tokens are written immediately for real-time feedback;
-        # a formatted markdown version is appended when the agent finishes.
         full_response: list[str] = []
-        assistant_header_written = False
-        tool_block_active = False
-        input_event = event  # Save reference before shadowing in loop
+        stream_buffer: list[str] = []
+        assistant_header_written: bool = False
+        tool_block_active: bool = False
+
+        def _flush_buffer() -> None:
+            """Write accumulated streaming tokens to RichLog as one line."""
+            nonlocal assistant_header_written
+            if not stream_buffer:
+                return
+            if not assistant_header_written:
+                self._write("\n[bold #7ee787]Assistant:[/] ")
+                assistant_header_written = True
+            self._write("".join(stream_buffer))
+            stream_buffer.clear()
+
         try:
             async for ag_event in runner.run(user_msg):
                 kind = ag_event["type"]
                 if kind == "content":
                     token = ag_event["data"]
                     full_response.append(token)
-                    if not assistant_header_written:
-                        self._write("\n[bold #7ee787]Assistant:[/] ")
-                        assistant_header_written = True
-                    self._write(token)
+                    stream_buffer.append(token)
                     tool_block_active = False
+                    # Flush on newline or when buffer reaches 80 chars
+                    if "\n" in token or len("".join(stream_buffer)) >= 80:
+                        _flush_buffer()
                 elif kind == "tool_call":
+                    _flush_buffer()  # flush any partial line before tool
                     name = ag_event["data"]["name"]
                     self._write(f"\n[#d29922]  🔧 {name}...[/]")
                     tool_block_active = True
                 elif kind == "tool_result":
+                    _flush_buffer()
                     output = ag_event["data"].get("output", "")
                     if output:
                         self._write(f"[#8b949e]  {output}[/]")
                 elif kind == "done":
+                    _flush_buffer()  # flush final partial line
                     if tool_block_active:
                         tool_block_active = False
-                    # Append formatted markdown version after the streamed output
-                    if full_response:
-                        response_text = "".join(full_response)
-                        formatted = _render_markdown(response_text)
-                        # Only append if _render_markdown produced different output
-                        # (avoid duplicating plain text)
         except Exception as exc:
+            _flush_buffer()
             self._write(f"\n[#f85149]Agent error:[/] {exc}")
-
-        # Clear the input field for the next message
-        input_event.input.value = ""
 
     async def _run_bash(self, command: str) -> str:
         """Execute a bash command and return its output.

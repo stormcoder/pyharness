@@ -205,6 +205,12 @@ class TestAppTabManagement:
         app = PyHarnessApp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            # Close existing store from _init_session fallback (avoids DB lock)
+            if hasattr(app, "_session_store") and app._session_store is not None:
+                try:
+                    app._session_store.close()
+                except Exception:
+                    pass
             # Ensure session store is set up
             sessions_dir = (
                 Path.home() / ".local" / "share" / "pyharness" / "sessions"
@@ -362,23 +368,28 @@ class TestMultiTabIntegration:
         from pyharness.core.session import SessionStore
 
         app = PyHarnessApp()
-        # Set up session store
-        sessions_dir = (
-            Path.home() / ".local" / "share" / "pyharness" / "sessions"
-        )
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        db_path = sessions_dir / "sessions.db"
-        store = SessionStore(db_path)
-        store.initialize()
-        app._session_store = store
         async with app.run_test() as pilot:
             await pilot.pause()
+            # Close existing store from _init_session fallback (avoids DB lock)
+            if hasattr(app, "_session_store") and app._session_store is not None:
+                try:
+                    app._session_store.close()
+                except Exception:
+                    pass
+            # Set up session store
+            sessions_dir = (
+                Path.home() / ".local" / "share" / "pyharness" / "sessions"
+            )
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            db_path = sessions_dir / "sessions.db"
+            store = SessionStore(db_path)
+            store.initialize()
+            app._session_store = store
             app.action_new_session()
             await pilot.pause()
             # The screen should have changed
             assert app.screen is not None
-
-        store.close()
+            store.close()
 
     async def test_switch_to_session_method_exists_and_callable(self) -> None:
         """switch_to_session is callable without errors for valid session."""

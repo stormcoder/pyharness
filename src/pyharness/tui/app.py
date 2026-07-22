@@ -284,6 +284,7 @@ class PyHarnessApp(App):
     def _init_session(self) -> None:
         """Initialize session store and load or create the current session."""
         from pathlib import Path
+        import uuid
 
         from pyharness.core.session import Session, SessionStore
 
@@ -325,7 +326,15 @@ class PyHarnessApp(App):
             self._focused_session_id = session.id
             self._session_screens[session.id] = ChatScreen()
         except Exception:
-            pass
+            # Fallback: when libsql/SessionStore is unavailable (e.g. CI, tests),
+            # create an in-memory-only session so the ChatScreen still loads.
+            import uuid
+            sid = str(uuid.uuid4())
+            self._current_session_id = sid
+            self._session_registry.register_default(sid)
+            self._session_order.append(sid)
+            self._focused_session_id = sid
+            self._session_screens[sid] = ChatScreen()
 
     def _save_state(self) -> None:
         """Persist config, current-session pointer, and active sessions to disk."""

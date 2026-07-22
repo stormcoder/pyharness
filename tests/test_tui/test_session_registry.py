@@ -384,26 +384,31 @@ class TestOnInputSubmittedSessionId:
     """
 
     def test_uses_app_current_session_id_for_setup(self) -> None:
-        """on_input_submitted agent setup references self.app._current_session_id."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """_run_agent agent setup references self.app._current_session_id.
+
+        After the input refactor, agent setup code (resolve_model,
+        get_registry, create_agent_graph, AgentRunner) moved from
+        ``on_input_submitted`` into the ``_run_agent`` background method.
+        """
+        source = inspect.getsource(ChatScreen._run_agent)
         assert "self.app._current_session_id" in source, (
-            "on_input_submitted must use self.app._current_session_id for agent setup"
+            "_run_agent must use self.app._current_session_id for agent setup"
         )
 
     def test_does_not_have_self_session_id_attribute(self) -> None:
         """ChatScreen does NOT have a session_id attribute in Phase 4."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(ChatScreen._run_agent)
         # In Phase 4, session resolution moved to app level
         assert "self.session_id" not in source, (
-            "on_input_submitted must NOT reference self.session_id "
+            "_run_agent must NOT reference self.session_id "
             "(session ownership moved to app level)"
         )
 
     def test_session_id_comes_from_current_session(self) -> None:
-        """Agent setup derives session_id from self.app._current_session_id."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """Agent setup in _run_agent derives session_id from self.app._current_session_id."""
+        source = inspect.getsource(ChatScreen._run_agent)
         assert "session_id = self.app._current_session_id" in source, (
-            "on_input_submitted must assign session_id = self.app._current_session_id"
+            "_run_agent must assign session_id = self.app._current_session_id"
         )
 
     def test_chat_screen_no_longer_needs_resolve_method(self) -> None:
