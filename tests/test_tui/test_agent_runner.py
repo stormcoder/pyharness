@@ -722,10 +722,18 @@ class TestMouseTextSelection:
             "ChatScreen must implement on_rich_log_mouse_down for selection start"
         )
 
-    def test_on_rich_log_mouse_up_method_exists(self) -> None:
-        """ChatScreen must have on_rich_log_mouse_up event handler."""
-        assert hasattr(ChatScreen, "on_rich_log_mouse_up"), (
-            "ChatScreen must implement on_rich_log_mouse_up for copy-to-clipboard"
+    def test_on_text_area_mouse_up_method_exists(self) -> None:
+        """ChatScreen must have on_text_area_mouse_up event handler (renamed from
+        on_rich_log_mouse_up after mouse-up was moved to the TextArea overlay)."""
+        assert hasattr(ChatScreen, "on_text_area_mouse_up"), (
+            "ChatScreen must implement on_text_area_mouse_up for copy-to-clipboard"
+        )
+
+    def test_dismiss_selection_overlay_method_exists(self) -> None:
+        """ChatScreen must have _dismiss_selection_overlay helper."""
+        assert hasattr(ChatScreen, "_dismiss_selection_overlay"), (
+            "ChatScreen must implement _dismiss_selection_overlay to hide"
+            " overlay and restore RichLog"
         )
 
     def test_mouse_down_activates_overlay(self) -> None:
@@ -747,39 +755,64 @@ class TestMouseTextSelection:
 
     def test_mouse_up_copies_to_clipboard(self) -> None:
         """Mouse up handler must call self.app.copy_to_clipboard()."""
-        source = inspect.getsource(ChatScreen.on_rich_log_mouse_up)
+        source = inspect.getsource(ChatScreen.on_text_area_mouse_up)
         assert "copy_to_clipboard" in source, (
-            "on_rich_log_mouse_up must call self.app.copy_to_clipboard()"
+            "on_text_area_mouse_up must call self.app.copy_to_clipboard()"
         )
         assert "overlay.selected_text" in source, (
-            "on_rich_log_mouse_up must read overlay.selected_text"
+            "on_text_area_mouse_up must read overlay.selected_text"
         )
 
     def test_mouse_up_hides_overlay(self) -> None:
         """Mouse up handler must hide the selection overlay."""
-        source = inspect.getsource(ChatScreen.on_rich_log_mouse_up)
+        source = inspect.getsource(ChatScreen.on_text_area_mouse_up)
         assert "overlay.display = False" in source or "overlay.display=False" in source, (
-            "on_rich_log_mouse_up must set overlay.display = False"
+            "on_text_area_mouse_up must set overlay.display = False"
         )
 
     def test_copied_notification_shown(self) -> None:
         """Mouse up handler must show 'Copied' notification."""
-        source = inspect.getsource(ChatScreen.on_rich_log_mouse_up)
+        source = inspect.getsource(ChatScreen.on_text_area_mouse_up)
         assert "Copied" in source, (
-            "on_rich_log_mouse_up must show a 'Copied' notification"
+            "on_text_area_mouse_up must show a 'Copied' notification"
         )
         assert "self.notify" in source, (
-            "on_rich_log_mouse_up must call self.notify() for the 'Copied' message"
+            "on_text_area_mouse_up must call self.notify() for the 'Copied' message"
         )
 
     def test_escape_key_cancels_selection(self) -> None:
-        """Escape key must hide the selection overlay without copying."""
-        source = inspect.getsource(ChatScreen._on_key)
-        assert 'overlay.display' in source, (
-            "_on_key must check overlay.display to cancel selection"
+        """Escape key must hide the selection overlay via _dismiss_selection_overlay.
+
+        After the refactor, ``_on_key`` delegates to ``_dismiss_selection_overlay()``
+        which hides the overlay AND restores RichLog visibility.
+        """
+        # _on_key must call the dismiss helper
+        key_source = inspect.getsource(ChatScreen._on_key)
+        assert 'overlay.display' in key_source or '_dismiss_selection_overlay' in key_source, (
+            "_on_key must check overlay.display or call _dismiss_selection_overlay()"
         )
-        assert 'overlay.display = False' in source or 'overlay.display=False' in source, (
-            "_on_key must set overlay.display = False on Escape"
+        # _dismiss_selection_overlay must set overlay.display = False
+        dismiss_source = inspect.getsource(ChatScreen._dismiss_selection_overlay)
+        assert 'overlay.display = False' in dismiss_source or 'overlay.display=False' in dismiss_source, (
+            "_dismiss_selection_overlay must set overlay.display = False"
+        )
+        # _dismiss_selection_overlay must restore RichLog visibility
+        assert 'area.display = True' in dismiss_source or 'area.display=True' in dismiss_source, (
+            "_dismiss_selection_overlay must set area.display = True to restore RichLog"
+        )
+
+    def test_mouse_down_hides_richlog(self) -> None:
+        """on_rich_log_mouse_down must hide RichLog (area.display = False)."""
+        source = inspect.getsource(ChatScreen.on_rich_log_mouse_down)
+        assert "area.display = False" in source or "area.display=False" in source, (
+            "on_rich_log_mouse_down must hide RichLog via area.display = False"
+        )
+
+    def test_mouse_up_restores_richlog(self) -> None:
+        """on_text_area_mouse_up must restore RichLog (area.display = True)."""
+        source = inspect.getsource(ChatScreen.on_text_area_mouse_up)
+        assert "area.display = True" in source or "area.display=True" in source, (
+            "on_text_area_mouse_up must restore RichLog via area.display = True"
         )
 
     def test_compose_has_select_overlay(self) -> None:

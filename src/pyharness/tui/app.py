@@ -67,12 +67,23 @@ class PyHarnessApp(App):
         background: #0d1117;
     }
 
-    #select-overlay {
+    #chat-stack {
         height: 1fr;
+        layout: grid;
+        grid-size: 1;
+    }
+
+    #chat-stack > * {
+        row-span: 1;
+        column-span: 1;
+    }
+
+    #select-overlay {
         overflow-y: auto;
         padding: 1 2;
         border: none;
         background: #0d1117;
+        color: $text;
     }
 
     #input-area {

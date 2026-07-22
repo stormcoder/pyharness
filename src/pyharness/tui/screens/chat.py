@@ -85,13 +85,16 @@ class ChatScreen(Screen):
         with Horizontal():
             # Main chat area
             with Container(id="chat-container"):
-                rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
-                rich_log.can_focus = False  # CRITICAL: prevents tab focus stealing
-                yield rich_log
-                # Selection overlay — hidden TextArea for mouse text selection
-                select_area = TextArea(id="select-overlay", read_only=True, show_line_numbers=False)
-                select_area.display = False
-                yield select_area
+                # Stack chart-area and select-overlay in a grid so they occupy
+                # the same space.  RichLog is the visible default; TextArea
+                # appears on top for mouse text selection.
+                with Container(id="chat-stack"):
+                    rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
+                    rich_log.can_focus = False
+                    yield rich_log
+                    select_area = TextArea(id="select-overlay", read_only=True, show_line_numbers=False)
+                    select_area.display = False
+                    yield select_area
                 with Container(id="input-area"):
                     yield PromptInput(
                         placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
@@ -154,19 +157,21 @@ class ChatScreen(Screen):
             return ""
 
     def on_rich_log_mouse_down(self, event: events.MouseDown) -> None:
-        """Activate selection overlay when clicking on the chat output."""
+        """Swap to selection overlay when clicking on the chat output."""
         if event.widget is None or event.widget.id != "chat-area":
             return
         try:
+            area = self.query_one("#chat-area", RichLog)
             overlay = self.query_one("#select-overlay", TextArea)
             overlay.load_text(self._get_chat_plain_text())
-            overlay.display = True
+            area.display = False   # hide RichLog
+            overlay.display = True  # show TextArea on top
             overlay.focus()
         except Exception:
             pass
 
-    def on_rich_log_mouse_up(self, event: events.MouseUp) -> None:
-        """On mouse up in selection mode: copy selected text, hide overlay."""
+    def on_text_area_mouse_up(self, event: events.MouseUp) -> None:
+        """On mouse up in selection mode: copy selected text, restore RichLog."""
         try:
             overlay = self.query_one("#select-overlay", TextArea)
             if not overlay.display:
@@ -175,7 +180,19 @@ class ChatScreen(Screen):
             if selected.strip():
                 self.app.copy_to_clipboard(selected)
                 self.notify("[#7ee787]Copied[/]", timeout=2)
+            area = self.query_one("#chat-area", RichLog)
             overlay.display = False
+            area.display = True
+        except Exception:
+            pass
+
+    def _dismiss_selection_overlay(self) -> None:
+        """Hide selection overlay and restore RichLog."""
+        try:
+            overlay = self.query_one("#select-overlay", TextArea)
+            area = self.query_one("#chat-area", RichLog)
+            overlay.display = False
+            area.display = True
         except Exception:
             pass
 
@@ -779,7 +796,7 @@ class ChatScreen(Screen):
             try:
                 overlay = self.query_one("#select-overlay", TextArea)
                 if overlay.display:
-                    overlay.display = False
+                    self._dismiss_selection_overlay()
                     event.stop()
                     event.prevent_default()
                     return
