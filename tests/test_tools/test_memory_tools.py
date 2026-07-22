@@ -3,9 +3,14 @@
 All tools must return graceful "MemPalace not installed" messages when
 ``mempalace`` is not importable.  The test environment does *not* have
 mempalace installed, so every tool returns the install-prompt string.
+
+R3.14-R3.15: Tools are ``async def`` — all invocations use ``await tool.ainvoke()``
+to ensure safe operation under a running event loop.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 from pyharness.tools.memory_tools import (
     _MEM_NOT_INSTALLED,
@@ -35,15 +40,15 @@ def _assert_graceful(result: str, tool_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mempalace_search_returns_graceful_message() -> None:
+async def test_mempalace_search_returns_graceful_message() -> None:
     """``mempalace_search`` returns the install prompt when mempalace is absent."""
-    result = mempalace_search.invoke({"query": "auth bug", "limit": 5})
+    result = await mempalace_search.ainvoke({"query": "auth bug", "limit": 5})
     _assert_graceful(result, "mempalace_search")
 
 
-def test_mempalace_search_default_limit() -> None:
+async def test_mempalace_search_default_limit() -> None:
     """``mempalace_search`` accepts limit as optional."""
-    result = mempalace_search.invoke({"query": "sessions"})
+    result = await mempalace_search.ainvoke({"query": "sessions"})
     _assert_graceful(result, "mempalace_search")
 
 
@@ -52,9 +57,11 @@ def test_mempalace_search_default_limit() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mempalace_remember_returns_graceful_message() -> None:
+async def test_mempalace_remember_returns_graceful_message() -> None:
     """``mempalace_remember`` returns the install prompt when mempalace is absent."""
-    result = mempalace_remember.invoke({"fact": "AuthMiddleware lives in src/auth/middleware.py"})
+    result = await mempalace_remember.ainvoke(
+        {"fact": "AuthMiddleware lives in src/auth/middleware.py"}
+    )
     _assert_graceful(result, "mempalace_remember")
 
 
@@ -63,9 +70,9 @@ def test_mempalace_remember_returns_graceful_message() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mempalace_search_sessions_returns_graceful_message() -> None:
+async def test_mempalace_search_sessions_returns_graceful_message() -> None:
     """``mempalace_search_sessions`` returns the install prompt when mempalace is absent."""
-    result = mempalace_search_sessions.invoke({"topic": "auth refactor"})
+    result = await mempalace_search_sessions.ainvoke({"topic": "auth refactor"})
     _assert_graceful(result, "mempalace_search_sessions")
 
 
@@ -74,15 +81,15 @@ def test_mempalace_search_sessions_returns_graceful_message() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mempalace_diary_read_returns_graceful_message() -> None:
+async def test_mempalace_diary_read_returns_graceful_message() -> None:
     """``mempalace_diary_read`` returns the install prompt when mempalace is absent."""
-    result = mempalace_diary_read.invoke({"agent_name": "build"})
+    result = await mempalace_diary_read.ainvoke({"agent_name": "build"})
     _assert_graceful(result, "mempalace_diary_read")
 
 
-def test_mempalace_diary_read_default_agent() -> None:
+async def test_mempalace_diary_read_default_agent() -> None:
     """``mempalace_diary_read`` works with default agent_name."""
-    result = mempalace_diary_read.invoke({})
+    result = await mempalace_diary_read.ainvoke({})
     _assert_graceful(result, "mempalace_diary_read")
 
 
@@ -91,9 +98,9 @@ def test_mempalace_diary_read_default_agent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mempalace_kg_query_returns_graceful_message() -> None:
+async def test_mempalace_kg_query_returns_graceful_message() -> None:
     """``mempalace_kg_query`` returns the install prompt when mempalace is absent."""
-    result = mempalace_kg_query.invoke({"entity": "AuthMiddleware"})
+    result = await mempalace_kg_query.ainvoke({"entity": "AuthMiddleware"})
     _assert_graceful(result, "mempalace_kg_query")
 
 
@@ -102,9 +109,9 @@ def test_mempalace_kg_query_returns_graceful_message() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mempalace_kg_add_valid_input() -> None:
+async def test_mempalace_kg_add_valid_input() -> None:
     """``mempalace_kg_add`` handles valid input gracefully without mempalace."""
-    result = mempalace_kg_add.invoke({
+    result = await mempalace_kg_add.ainvoke({
         "subject": "AuthMiddleware",
         "predicate": "located_in",
         "obj": "src/auth/middleware.py",
@@ -112,9 +119,9 @@ def test_mempalace_kg_add_valid_input() -> None:
     _assert_graceful(result, "mempalace_kg_add")
 
 
-def test_mempalace_kg_add_with_special_characters() -> None:
+async def test_mempalace_kg_add_with_special_characters() -> None:
     """``mempalace_kg_add`` handles subject/obj with special characters."""
-    result = mempalace_kg_add.invoke({
+    result = await mempalace_kg_add.ainvoke({
         "subject": "error handling",
         "predicate": "uses",
         "obj": "SentryIntegration v2.0",
@@ -166,12 +173,15 @@ def test_format_results_truncation() -> None:
 
 
 def test_all_memory_tools_are_callable() -> None:
-    """Every tool in ALL_MEMORY_TOOLS has an ``invoke`` method."""
+    """Every tool in ALL_MEMORY_TOOLS has an ``ainvoke`` method.
+
+    R3.14-R3.15: Async tools use ``ainvoke``, not ``invoke``.
+    """
     from pyharness.tools.memory_tools import ALL_MEMORY_TOOLS
 
     for t in ALL_MEMORY_TOOLS:
-        assert hasattr(t, "invoke"), f"{t.name} should have an invoke method"
-        assert callable(t.invoke), f"{t.name}.invoke should be callable"
+        assert hasattr(t, "ainvoke"), f"{t.name} should have an ainvoke method"
+        assert callable(t.ainvoke), f"{t.name}.ainvoke should be callable"
 
 
 def test_all_memory_tools_are_langchain_tools() -> None:

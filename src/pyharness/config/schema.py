@@ -207,6 +207,14 @@ class PyHarnessConfig(BaseModel):
     # ---- Plugins ----
     plugin: list[str] = Field(default_factory=list)
 
+    # ---- Concurrency ----
+    max_concurrent_agents: int = Field(
+        default=4,
+        ge=1,
+        description="Maximum number of agents that may run simultaneously "
+        "(R3.11 — parallel multi-agent spec).",
+    )
+
     # ---- Compaction ----
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 

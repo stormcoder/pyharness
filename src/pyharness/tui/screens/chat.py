@@ -173,6 +173,40 @@ class ChatScreen(Screen):
             sidebar = self.query_one("Sidebar")
             if hasattr(sidebar, "refresh_agents_md"):
                 sidebar.refresh_agents_md()
+        # Refresh app-level SessionTabBar when this screen becomes visible
+        if hasattr(self, "_refresh_tab_bar"):
+            self._refresh_tab_bar()
+
+    def on_screen_resume(self) -> None:
+        """Called when this screen becomes the active screen (tab switch)."""
+        if hasattr(self, "_refresh_tab_bar"):
+            self._refresh_tab_bar()
+
+    def _refresh_tab_bar(self) -> None:
+        """Populate the app-level SessionTabBar from the session registry."""
+        try:
+            from pyharness.tui.widgets.session_tabs import SessionTabBar
+            tab_bar = self.app.query_one("#session-tabs", SessionTabBar)
+        except Exception:
+            return
+        app = self.app
+        if not hasattr(app, "_session_order"):
+            return
+        sessions: list[tuple[str, str]] = []
+        running_ids: set[str] = set()
+        for sid in app._session_order:  # type: ignore[union-attr]
+            if not sid:
+                continue
+            title = sid[:8] + "..." if len(sid) > 8 else sid
+            sessions.append((sid, title))
+            if (hasattr(app, "_agent_manager")
+                    and app._agent_manager.is_running(sid)):
+                running_ids.add(sid)
+        tab_bar.update_state(
+            sessions=sessions,
+            active_id=app._focused_session_id,
+            running_ids=running_ids,
+        )
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission.

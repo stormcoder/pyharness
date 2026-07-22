@@ -4,6 +4,74 @@ All notable changes to pyharness will be documented in this file.
 
 ## [Unreleased]
 
+### Phase 4: Tabbed TUI (SessionTabBar) — 2026-07-21
+
+#### Added
+- **`src/pyharness/tui/widgets/session_tabs.py`** — ``SessionTabBar`` widget:
+  - Horizontal tab bar displaying one tab per active session with title **(R4.1)**
+  - Click tab → switch to that session via app callback **(R4.2)**
+  - ``+`` button creates a new session **(R4.3)**
+  - ``×`` button closes a session tab **(R4.4)**
+  - Activity indicator (``●`` dot) when agent is running in that tab **(R4.6)**
+  - ``Ctrl+W`` binding for closing the current tab **(R4.5)**
+- **Tab management in `PyHarnessApp`**:
+  - ``_session_screens: dict[str, ChatScreen]`` — maps session_id to screen instances
+  - ``_session_order: list[str]`` — ordered list of open tab session IDs
+  - ``_focused_session_id: str`` — currently active session
+  - ``switch_to_session()`` — switch visible screen to a session's ChatScreen
+  - ``next_tab()`` / ``previous_tab()`` — cycle through tabs
+  - ``action_close_tab()`` / ``_close_session_tab()`` — close a session tab
+  - ``action_new_session()`` now creates real sessions and switches to them
+- **`ChatScreen` integration**:
+  - ``SessionTabBar`` in screen compose — always visible at top
+  - ``_refresh_tab_bar()`` — populates tab bar from app state
+  - ``on_screen_resume()`` — refreshes tabs when screen becomes visible
+  - ``on_session_tab_bar_tab_selected/closed/new_tab_requested`` — message handlers
+- **`tests/test_tui/test_session_tabs.py`** — 37 tests:
+  - Widget construction, state management, message types
+  - App tab management: bindings, attributes, lifecycle
+  - Integration: tab lifecycle, close protection, interrupt handling
+
+#### Changed
+- `PyHarnessApp.__init__` — added tab management attributes
+- `PyHarnessApp.on_mount` — tracks focused session, populates session order
+- `PyHarnessApp.action_interrupt` — uses `_focused_session_id` for scoped interrupt
+- `PyHarnessApp._save_state` — saves all active session tabs to `active.json`
+- `PyHarnessApp.BINDINGS` — added `ctrl+w` for close tab
+- `ChatScreen.compose` — yields `SessionTabBar` at top of layout
+- `ChatScreen.on_mount` — calls `_refresh_tab_bar()` after initialization
+- `src/pyharness/tui/widgets/__init__.py` — exports `SessionTabBar`
+
+### Phase 3: Concurrency Manager (AgentManager) — 2026-07-21
+
+#### Added
+- **`src/pyharness/core/agent_manager.py`** — ``AgentManager`` class:
+  - ``_tasks: dict[str, asyncio.Task]`` per-session task tracking **(R3.1)**
+  - ``launch()`` creates ``asyncio.create_task()`` for agent runs **(R3.2)**
+  - Streaming output routed to correct screen via ``screen._write(token)`` **(R3.3, R3.7-R3.10)**
+  - ``cancel()`` cancels a specific session's task **(R3.4)**
+  - ``is_running()`` queries task status **(R3.5)**
+  - ``cancel_all()`` cancels all tasks on shutdown **(R3.6)**
+  - ``max_concurrent_agents`` configurable concurrency cap **(R3.11)**
+  - FIFO queuing when limit reached, with user notification **(R3.12)**
+  - Auto-drain queue when a running agent completes **(R3.13)**
+- **`PyHarnessConfig.max_concurrent_agents`** — new config field (default 4)
+- **`tests/test_core/test_agent_manager.py`** — 26 unit tests covering all R3.x requirements
+
+#### Changed
+- **`src/pyharness/tools/memory_tools.py`** — All tools converted from
+  ``asyncio.run()`` wrappers to ``async def`` with direct ``await`` calls.
+  Now safe under a running event loop **(R3.14-R3.15)**.
+- **`src/pyharness/tui/app.py`** — Wired ``AgentManager`` into ``PyHarnessApp``:
+  ``__init__`` initializes it, ``action_interrupt`` delegates to it,
+  ``on_unmount`` calls ``cancel_all()``.
+- **`src/pyharness/tui/screens/chat.py`** — ``on_input_submitted`` delegates
+  to ``AgentManager.launch()`` instead of inline async loop.
+- **`tests/test_tools/test_memory_tools.py`** — Updated to use ``await tool.ainvoke()``
+  for async-only tools.
+- **`tests/acceptance/test_phase2_acceptance.py`** — MemPalace graceful
+  degradation test updated to async ``ainvoke``.
+
 ### Remove static model list — 2026-07-19
 
 #### Changed

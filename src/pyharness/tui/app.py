@@ -10,6 +10,7 @@ Phase 2 additions:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -19,7 +20,12 @@ from textual.widgets import Static
 
 from pyharness.config.loader import load_config
 from pyharness.config.schema import PyHarnessConfig
+from pyharness.core.active_sessions import ActiveSessions
+from pyharness.core.agent_manager import AgentManager
+from pyharness.core.session_graph_registry import SessionGraphRegistry
+from pyharness.core.session_registry import DEFAULT_SCREEN_ID, SessionRegistry
 from pyharness.tui.screens.chat import ChatScreen
+from pyharness.tui.widgets.session_tabs import SessionTabBar
 
 
 class PyHarnessApp(App):
@@ -31,6 +37,12 @@ class PyHarnessApp(App):
     CSS = """
     Screen {
         background: #0d1117;
+    }
+
+    #session-tabs {
+        dock: top;
+        height: 3;
+        background: #161b22;
     }
 
     ChatScreen {
@@ -157,6 +169,7 @@ class PyHarnessApp(App):
         ("tab", "switch_agent", "Switch Agent"),  # MUST be first for priority
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+n", "new_session", "New Session"),
+        ("ctrl+w", "close_tab", "Close Tab"),
         ("escape", "interrupt", "Interrupt"),
         ("ctrl+o", "toggle_sidebar", "Toggle Sidebar"),
         ("ctrl+p", "command_palette", "Commands"),
@@ -205,6 +218,21 @@ class PyHarnessApp(App):
         self._config_loaded_from_disk = False
         self._provider_status: dict[str, bool] = {}
         self._connected_providers: set[str] = set()
+        # Phase 4: multi-session infrastructure
+        self._session_registry = SessionRegistry()
+        self._checkpointer = self._create_checkpointer()
+        self._graph_registry = SessionGraphRegistry(checkpointer=self._checkpointer)
+        self._active_sessions = ActiveSessions(
+            Path.home() / ".local" / "share" / "pyharness" / "sessions"
+        )
+        self._cancel_events: dict[str, asyncio.Event] = {}
+        self._agent_manager = AgentManager(
+            max_concurrent=self.config.max_concurrent_agents
+        )
+        self._agent_manager.set_notifier(self)
+        self._session_screens: dict[str, object] = {}
+        self._session_order: list[str] = []
+        self._focused_session_id: str | None = None
 
     def on_mount(self) -> None:
         """Load project config and push the chat screen on startup."""
@@ -238,12 +266,23 @@ class PyHarnessApp(App):
         # Initialize session store synchronously (libsql is not async)
         self._init_session()
         self.push_screen(ChatScreen())
+        # Phase 4: mount session tab bar at app level
+        self._active_sessions.load()
+        tabs = [(e["session_id"], self._session_title(e["session_id"]))
+                for e in self._active_sessions.list_all()]
+        tab_bar = SessionTabBar(
+            sessions=tabs,
+            active_id=self._focused_session_id,
+            id="session-tabs",
+        )
+        self.mount(tab_bar)
         # Sidebar now exists — push provider status
         self._update_sidebar_providers()
 
     def _init_session(self) -> None:
         """Initialize session store and load or create the current session."""
         from pathlib import Path
+
         from pyharness.core.session import Session, SessionStore
 
         db_path = Path.home() / ".local" / "share" / "pyharness" / "sessions" / "sessions.db"
@@ -259,6 +298,11 @@ class PyHarnessApp(App):
                     if session is not None:
                         self._current_session_id = session.id
                         self._session_token_count = session.total_tokens
+                        # Phase 4: register restored session
+                        self._session_registry.register_default(session.id)
+                        self._active_sessions.add(session.id, DEFAULT_SCREEN_ID)
+                        self._session_order.append(session.id)
+                        self._focused_session_id = session.id
                         return
                 except Exception:
                     pass
@@ -271,19 +315,29 @@ class PyHarnessApp(App):
             )
             self._session_store.create_session(session)
             self._current_session_id = session.id
+            # Phase 4: register default session with registry
+            self._session_registry.register_default(session.id)
+            self._active_sessions.add(session.id, DEFAULT_SCREEN_ID)
+            self._session_order.append(session.id)
+            self._focused_session_id = session.id
         except Exception:
             pass
 
     def _save_state(self) -> None:
-        """Persist config and current-session pointer to disk."""
+        """Persist config, current-session pointer, and active sessions to disk."""
         try:
             from pyharness.config.loader import save_config
             save_config(self.config)
         except Exception:
             pass
+        # Phase 4: persist active sessions (replaces single current pointer)
+        try:
+            self._active_sessions.save()
+        except Exception:
+            pass
+        # Backward compat: also write legacy pointer for older code
         if self._current_session_id:
             try:
-                from pathlib import Path
                 ptr = Path.home() / ".local" / "share" / "pyharness" / "sessions" / "current"
                 ptr.parent.mkdir(parents=True, exist_ok=True)
                 ptr.write_text(self._current_session_id)
@@ -470,7 +524,17 @@ class PyHarnessApp(App):
         self.exit()
 
     def on_unmount(self) -> None:
-        """Save all persistent state before the app exits."""
+        """Save all persistent state and cancel running agents before exit."""
+        # Phase 4: cancel all agent tasks
+        import asyncio as _asyncio
+        try:
+            loop = _asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self._agent_manager.cancel_all())
+            else:
+                loop.run_until_complete(self._agent_manager.cancel_all())
+        except Exception:
+            pass
         try:
             from pyharness.config.loader import save_config
             save_config(self.config)
@@ -490,10 +554,6 @@ class PyHarnessApp(App):
                 screen.update_status(text)
         except Exception:
             pass
-
-    def action_new_session(self) -> None:
-        """Create a new chat session."""
-        self.notify("New session (not yet implemented)", severity="information")
 
     def action_interrupt(self) -> None:
         """Interrupt a running agent loop."""
@@ -693,7 +753,7 @@ class PyHarnessApp(App):
                 try:
                     screen = self.screen
                     if hasattr(screen, "_handle_editor"):
-                        screen._handle_editor(chat)
+                        screen._handle_editor()
                 except Exception:
                     pass
             elif cmd == "/export":
@@ -707,3 +767,206 @@ class PyHarnessApp(App):
                 self.notify(f"Command: {cmd}", timeout=2)
         except Exception:
             self.notify(f"Command: {cmd}", timeout=2)
+
+    # -- Phase 4: multi-session / tab management --------------------------------
+
+    @staticmethod
+    def _create_checkpointer() -> object | None:
+        """Create a LangGraph checkpointer backed by SQLite.
+
+        Returns ``None`` if the optional dependency is unavailable.
+        """
+        try:
+            from langgraph.checkpoint.sqlite import SqliteSaver  # type: ignore[import-untyped]
+
+            db_path = (
+                Path.home()
+                / ".local"
+                / "share"
+                / "pyharness"
+                / "sessions"
+                / "checkpoints.db"
+            )
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            return SqliteSaver.from_conn_string(str(db_path))
+        except ImportError:
+            return None
+        except Exception:
+            return None
+
+    def _session_title(self, session_id: str) -> str:
+        """Return a display title for the given session ID."""
+        store = self._session_store
+        if store is not None:
+            try:
+                s = store.get_session(session_id)
+                if s is not None:
+                    return s.title or "New Session"
+            except Exception:
+                pass
+        return "New Session"
+
+    def _refresh_tab_bar(self) -> None:
+        """Repaint the SessionTabBar from current state."""
+        try:
+            tab_bar = self.query_one("#session-tabs", SessionTabBar)
+        except Exception:
+            return
+        run_ids = {
+            sid for sid in self._cancel_events
+            if self._agent_manager.is_running(sid)
+        }
+        tabs = [
+            (sid, self._session_title(sid))
+            for sid in self._session_order
+            if sid in self._session_screens
+        ]
+        tab_bar.update_state(
+            sessions=tabs,
+            active_id=self._focused_session_id,
+            running_ids=run_ids,
+        )
+
+    def switch_to_session(self, session_id: str) -> None:
+        """Switch the visible screen to *session_id*'s ChatScreen."""
+        if session_id == self._focused_session_id:
+            return
+        screen = self._session_screens.get(session_id)
+        if screen is None:
+            return
+        self._focused_session_id = session_id
+        self.switch_screen(screen)
+        self._refresh_tab_bar()
+
+    def action_new_session(self) -> None:
+        """Create a new session with its own ChatScreen tab.
+
+        R4.3 — Triggered by the ``+`` button or Ctrl+N.
+        """
+        from pyharness.core.session import Session, SessionStore
+
+        store = self._session_store
+        if store is None:
+            # Lazy-initialize session store (belt-and-suspenders)
+            store = SessionStore(
+                Path.home() / ".local" / "share" / "pyharness" / "sessions" / "sessions.db"
+            )
+            try:
+                store.initialize()
+            except Exception:
+                pass
+            self._session_store = store
+
+        session = Session(
+            title="New Session",
+            project=str(Path.cwd().name),
+            model=self.config.model if self.config else "",
+            agent="build",
+        )
+        try:
+            store.create_session(session)
+        except Exception:
+            pass
+
+        sid = session.id
+        screen = ChatScreen()
+        screen_id = f"chat-{len(self._session_order)}"
+
+        self._session_registry.register(screen_id, sid)
+        self._session_screens[sid] = screen
+        self._session_order.append(sid)
+        self._focused_session_id = sid
+        self._active_sessions.add(sid, screen_id)
+
+        self.push_screen(screen)
+        self._refresh_tab_bar()
+        self.notify("New session created", timeout=2)
+
+    def action_close_tab(self) -> None:
+        """Close the currently focused session tab (Ctrl+W)."""
+        if self._focused_session_id is None:
+            return
+        self._close_session_tab(self._focused_session_id)
+
+    def _close_session_tab(self, session_id: str) -> None:
+        """Internal: close a session tab by session_id.
+
+        Cancels any running agent, saves the session, removes from tracking
+        structures, and switches to another open tab.  Refuses to close the
+        last remaining tab.
+        """
+        if len(self._session_screens) <= 1:
+            self.notify("Cannot close last tab", severity="warning")
+            return
+
+        # Cancel running agent for this session
+        self._agent_manager.cancel(session_id)
+        self._cancel_events.pop(session_id, None)
+
+        # Remove from tracking
+        self._session_screens.pop(session_id, None)
+        self._session_registry.unregister(
+            next(
+                (k for k, v in self._session_registry.list_all().items()
+                 if v == session_id),
+                "",
+            )
+        )
+        self._active_sessions.remove(session_id)
+        if session_id in self._session_order:
+            self._session_order.remove(session_id)
+
+        # Switch to another tab
+        if self._session_order:
+            new_focus = (
+                self._session_order[-1]
+                if session_id == self._focused_session_id
+                else self._focused_session_id
+            )
+            if new_focus and new_focus in self._session_screens:
+                self._focused_session_id = new_focus
+                self.switch_screen(self._session_screens[new_focus])
+
+        self._refresh_tab_bar()
+
+    def next_tab(self) -> None:
+        """Switch to the next session tab (Ctrl+Tab)."""
+        if not self._session_order or self._focused_session_id is None:
+            return
+        try:
+            idx = self._session_order.index(self._focused_session_id)
+            next_idx = (idx + 1) % len(self._session_order)
+            self.switch_to_session(self._session_order[next_idx])
+        except ValueError:
+            pass
+
+    def previous_tab(self) -> None:
+        """Switch to the previous session tab (Ctrl+Shift+Tab)."""
+        if not self._session_order or self._focused_session_id is None:
+            return
+        try:
+            idx = self._session_order.index(self._focused_session_id)
+            prev_idx = (idx - 1) % len(self._session_order)
+            self.switch_to_session(self._session_order[prev_idx])
+        except ValueError:
+            pass
+
+    # -- SessionTabBar message handlers -----------------------------------------
+
+    def on_session_tab_bar_tab_selected(
+        self, message: SessionTabBar.TabSelected
+    ) -> None:
+        """Handle a tab click — switch to that session (R4.2)."""
+        self.switch_to_session(message.session_id)
+
+    def on_session_tab_bar_tab_closed(
+        self, message: SessionTabBar.TabClosed
+    ) -> None:
+        """Handle a tab close-button click (R4.4)."""
+        self._close_session_tab(message.session_id)
+
+    def on_session_tab_bar_new_tab_requested(
+        self, message: SessionTabBar.NewTabRequested
+    ) -> None:
+        """Handle the ``+`` button click (R4.3)."""
+        self.action_new_session()

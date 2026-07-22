@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .agent import AgentRunner, create_agent_graph
+from .agent_manager import AgentManager
 from .provider import (
     fetch_models,
     get_small_model,
@@ -13,6 +14,7 @@ from .provider import (
 )
 
 __all__ = [
+    "AgentManager",
     "AgentRunner",
     "create_agent_graph",
     "fetch_models",

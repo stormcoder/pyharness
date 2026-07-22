@@ -3,7 +3,7 @@
 BUG-003: Output dumped all at once instead of streaming
   Previously agent response tokens were buffered into ``full_response``
   and only written to output on the "done" event.  Now each token is
-  written immediately via ``self._write(token)`` inside the content handler.
+  written immediately via ``screen._write(token)`` inside the content handler.
 
 BUG-004: Token counter never updates
   The status bar always showed "0 tokens".  ``update_status_bar`` existed
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import inspect
 
+from pyharness.core.agent_manager import AgentManager
 from pyharness.tui.app import PyHarnessApp
-from pyharness.tui.screens.chat import ChatScreen
 
 
 # ============================================================================
@@ -28,11 +28,11 @@ class TestStreamingImmediateWrite:
     """Each content token must be written immediately, not just buffered."""
 
     def test_write_called_inside_content_block(self) -> None:
-        """``self._write(token)`` is called inside the ``if kind == "content":`` block."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """``screen._write(token)`` is called inside the ``if kind == "content":`` block."""
+        source = inspect.getsource(AgentManager._run_agent)
 
         # The "content" block must contain both full_response.append and
-        # an immediate self._write(token).  We don't regex-parse the AST;
+        # an immediate screen._write(token).  We don't regex-parse the AST;
         # we verify the block structure by checking key patterns appear
         # in the correct relative order.
         lines = source.splitlines()
@@ -56,7 +56,7 @@ class TestStreamingImmediateWrite:
                     break
 
         assert content_start is not None, (
-            "on_input_submitted must have an 'if kind == \"content\":' block"
+            '_run_agent must have an \'if kind == "content":\' block'
         )
         if content_end is None:
             # Block runs to end of function — pick a generous window
@@ -64,8 +64,8 @@ class TestStreamingImmediateWrite:
 
         block = "\n".join(lines[content_start:content_end])
 
-        assert "self._write(" in block, (
-            "self._write(token) must be called inside the content block "
+        assert "._write(" in block, (
+            "screen._write(token) must be called inside the content block "
             "for immediate streaming, not deferred to the 'done' event"
         )
         assert "full_response.append(" in block, (
@@ -74,23 +74,23 @@ class TestStreamingImmediateWrite:
         )
 
     def test_write_and_append_both_present(self) -> None:
-        """Both ``full_response.append(token)`` AND ``self._write(token)``
+        """Both ``full_response.append(token)`` AND ``screen._write(token)``
         must exist in the content handler — append for markdown rendering
         at 'done', write for immediate streaming."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(AgentManager._run_agent)
 
         assert "full_response.append(token)" in source, (
             "full_response.append(token) must be called in the content handler"
         )
-        assert "self._write(token)" in source, (
-            "self._write(token) must be called in the content handler "
+        assert "._write(token)" in source, (
+            "screen._write(token) must be called in the content handler "
             "for each token to stream immediately"
         )
 
     def test_fallback_version_not_used_in_content_block(self) -> None:
         """Verify the content block does NOT fall back to the pre-fix
         pattern of only buffering (i.e. append only, no write)."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(AgentManager._run_agent)
         lines = source.splitlines()
 
         content_start: int | None = None
@@ -116,9 +116,9 @@ class TestStreamingImmediateWrite:
         # The pre-fix pattern would have append but NOT write.  We assert
         # write IS present.
         assert (
-            "self._write(token)" in block
+            "._write(token)" in block
         ), (
-            "BUG-003: self._write(token) must be present in content block. "
+            "BUG-003: screen._write(token) must be present in content block. "
             "Pre-fix code only had full_response.append(token); "
             "tokens must now stream immediately."
         )
@@ -129,7 +129,7 @@ class TestRenderMarkdownAtDone:
 
     def test_render_markdown_called_at_done(self) -> None:
         """``_render_markdown`` must be invoked inside the ``kind == "done"`` handler."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(AgentManager._run_agent)
         lines = source.splitlines()
 
         done_start: int | None = None
@@ -150,7 +150,7 @@ class TestRenderMarkdownAtDone:
                     break
 
         assert done_start is not None, (
-            "on_input_submitted must have a 'done' event handler"
+            "_run_agent must have a 'done' event handler"
         )
         if done_end is None:
             done_end = len(lines)
@@ -173,6 +173,8 @@ class TestStatusBarWidget:
 
     def test_status_bar_compose_creates_widget(self) -> None:
         """``ChatScreen.compose`` must yield a StatusBar with ``id="status-bar"``."""
+        from pyharness.tui.screens.chat import ChatScreen
+
         source = inspect.getsource(ChatScreen.compose)
         assert 'id="status-bar"' in source, (
             "ChatScreen.compose must create a widget with id='status-bar'"
@@ -183,6 +185,8 @@ class TestStatusBarWidget:
 
     def test_status_bar_initial_text_has_tokens(self) -> None:
         """The initial status bar text must include a token placeholder."""
+        from pyharness.tui.screens.chat import ChatScreen
+
         source = inspect.getsource(ChatScreen.compose)
         assert "tokens" in source, (
             "Status bar initial text must include 'tokens' label"

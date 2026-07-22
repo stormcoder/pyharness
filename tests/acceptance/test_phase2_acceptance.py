@@ -406,11 +406,14 @@ class TestMemPalaceIntegration:
         assert mempalace_kg_query is not None
         assert mempalace_kg_add is not None
 
-    def test_graceful_degradation_without_mempalace(self):
-        """Memory tools should return helpful message when MemPalace absent."""
+    async def test_graceful_degradation_without_mempalace(self):
+        """Memory tools should return helpful message when MemPalace absent.
+
+        R3.14-R3.15: Tools are async — use ``ainvoke``.
+        """
         from pyharness.tools.memory_tools import mempalace_search
 
-        result = mempalace_search.invoke({"query": "test query"})
+        result = await mempalace_search.ainvoke({"query": "test query"})
         assert "not installed" in result.lower() or "pip install" in result.lower()
 
     def test_memory_core_module_exists(self):

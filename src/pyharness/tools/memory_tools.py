@@ -15,6 +15,12 @@ Available tools
 - :tool:`mempalace_diary_read` — Read agent diary entries
 - :tool:`mempalace_kg_query` — Query the knowledge graph
 - :tool:`mempalace_kg_add` — Add a fact to the knowledge graph
+
+.. rubric:: R3.14-R3.15: Async Tool Safety
+
+All tools are ``async def`` and ``await`` the async ``MemoryStore`` methods
+directly.  The previous ``asyncio.run()`` wrappers have been removed to
+guarantee safe operation under a running event loop.
 """
 
 from __future__ import annotations
@@ -72,12 +78,12 @@ def _format_results(results: list[dict[str, Any]], max_items: int = 5) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tools
+# Tools (all async — R3.14-R3.15)
 # ---------------------------------------------------------------------------
 
 
 @tool
-def mempalace_search(query: str, limit: int = 5) -> str:
+async def mempalace_search(query: str, limit: int = 5) -> str:
     """Search across project memory for past conversations, decisions, and code context.
 
     Use this to find relevant information from earlier sessions, architectural
@@ -96,18 +102,16 @@ def mempalace_search(query: str, limit: int = 5) -> str:
     if not MEM_PALACE_AVAILABLE:
         return _MEM_NOT_INSTALLED
 
-    import asyncio
-
     store = _get_store()
     if not store.initialized:
         return _MEM_NOT_INSTALLED
 
-    results = asyncio.run(store.search(query=query, limit=limit))
+    results = await store.search(query=query, limit=limit)
     return _format_results(results, max_items=limit)
 
 
 @tool
-def mempalace_remember(fact: str) -> str:
+async def mempalace_remember(fact: str) -> str:
     """Store a fact, decision, or important finding for future recall.
 
     Use this to record architectural decisions, bug insights, important
@@ -125,18 +129,16 @@ def mempalace_remember(fact: str) -> str:
     if not MEM_PALACE_AVAILABLE:
         return _MEM_NOT_INSTALLED
 
-    import asyncio
-
     store = _get_store()
     if not store.initialized:
         return _MEM_NOT_INSTALLED
 
-    asyncio.run(store.remember(fact=fact))
+    await store.remember(fact=fact)
     return f"🧠 Stored: {fact[:200]}"
 
 
 @tool
-def mempalace_search_sessions(topic: str) -> str:
+async def mempalace_search_sessions(topic: str) -> str:
     """Find past sessions by topic or description.
 
     Use this to discover prior conversations, related debugging sessions,
@@ -153,18 +155,16 @@ def mempalace_search_sessions(topic: str) -> str:
     if not MEM_PALACE_AVAILABLE:
         return _MEM_NOT_INSTALLED
 
-    import asyncio
-
     store = _get_store()
     if not store.initialized:
         return _MEM_NOT_INSTALLED
 
-    results = asyncio.run(store.search_sessions(topic=topic, limit=10))
+    results = await store.search_sessions(topic=topic, limit=10)
     return _format_results(results, max_items=5)
 
 
 @tool
-def mempalace_diary_read(agent_name: str = "build") -> str:
+async def mempalace_diary_read(agent_name: str = "build") -> str:
     """Read diary entries from a specific agent.
 
     Diaries contain agent self-reflections, lessons learned, and notes
@@ -182,13 +182,11 @@ def mempalace_diary_read(agent_name: str = "build") -> str:
     if not MEM_PALACE_AVAILABLE:
         return _MEM_NOT_INSTALLED
 
-    import asyncio
-
     store = _get_store()
     if not store.initialized:
         return _MEM_NOT_INSTALLED
 
-    entries = asyncio.run(store.diary_read(agent_name=agent_name, last_n=5))
+    entries = await store.diary_read(agent_name=agent_name, last_n=5)
     if not entries:
         return f"No diary entries found for agent '{agent_name}'."
 
@@ -201,7 +199,7 @@ def mempalace_diary_read(agent_name: str = "build") -> str:
 
 
 @tool
-def mempalace_kg_query(entity: str) -> str:
+async def mempalace_kg_query(entity: str) -> str:
     """Query the knowledge graph for facts about an entity.
 
     The knowledge graph stores structured facts like "AuthMiddleware located_in
@@ -219,13 +217,11 @@ def mempalace_kg_query(entity: str) -> str:
     if not MEM_PALACE_AVAILABLE:
         return _MEM_NOT_INSTALLED
 
-    import asyncio
-
     store = _get_store()
     if not store.initialized:
         return _MEM_NOT_INSTALLED
 
-    results = asyncio.run(store.kg_query(entity=entity))
+    results = await store.kg_query(entity=entity)
     if not results:
         return f"No facts found for '{entity}'."
 
@@ -239,7 +235,7 @@ def mempalace_kg_query(entity: str) -> str:
 
 
 @tool
-def mempalace_kg_add(subject: str, predicate: str, obj: str) -> str:
+async def mempalace_kg_add(subject: str, predicate: str, obj: str) -> str:
     """Add a fact to the knowledge graph.
 
     Use this to record structural relationships between code entities,
@@ -258,13 +254,11 @@ def mempalace_kg_add(subject: str, predicate: str, obj: str) -> str:
     if not MEM_PALACE_AVAILABLE:
         return _MEM_NOT_INSTALLED
 
-    import asyncio
-
     store = _get_store()
     if not store.initialized:
         return _MEM_NOT_INSTALLED
 
-    result = asyncio.run(store.kg_add(subject=subject, predicate=predicate, obj=obj))
+    result = await store.kg_add(subject=subject, predicate=predicate, obj=obj)
     status = result.get("status", "unknown")
     if status == "ok":
         return f"🧠 Added fact: {subject} → {predicate} → {obj}"

@@ -25,6 +25,7 @@ import pytest
 from textual.widgets import RichLog
 
 from pyharness.config.schema import ProviderConfig, PyHarnessConfig
+from pyharness.core.agent_manager import AgentManager
 from pyharness.tui.app import PyHarnessApp
 from pyharness.tui.screens.chat import ChatScreen, _render_markdown
 from pyharness.tui.widgets.input import PromptInput
@@ -251,27 +252,27 @@ class TestToolCallDisplay:
     """Tool call events must display with the 🔧 emoji prefix."""
 
     def test_tool_call_wrench_in_source(self) -> None:
-        """The on_input_submitted handler must contain 🔧 emoji for tool calls."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """The _run_agent handler must contain 🔧 emoji for tool calls."""
+        source = inspect.getsource(AgentManager._run_agent)
         assert "🔧" in source, (
-            "on_input_submitted must display 🔧 prefix for tool_call events"
+            "_run_agent must display 🔧 prefix for tool_call events"
         )
 
     def test_tool_call_event_handled(self) -> None:
-        """on_input_submitted must handle 'tool_call' event type."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """_run_agent must handle 'tool_call' event type."""
+        source = inspect.getsource(AgentManager._run_agent)
         assert "tool_call" in source, (
-            "on_input_submitted must handle event type 'tool_call'"
+            "_run_agent must handle event type 'tool_call'"
         )
         assert "tool_result" in source, (
-            "on_input_submitted must handle event type 'tool_result'"
+            "_run_agent must handle event type 'tool_result'"
         )
 
     def test_assistant_label_in_source(self) -> None:
-        """'Assistant:' label must appear in source code."""
+        """'Assistant:' label must appear in on_input_submitted source code."""
         source = inspect.getsource(ChatScreen.on_input_submitted)
         assert "Assistant:" in source, (
-            "on_input_submitted must print 'Assistant:' label before tokens"
+            "on_input_submitted must print 'Assistant:' label before agent launch"
         )
 
 
@@ -320,17 +321,17 @@ class TestInputClearsAfterAgent:
             )
 
     def test_event_variable_not_shadowed(self) -> None:
-        """The 'event' variable must not be shadowed by async iterator variable.
-        Look for 'input_event = event' pattern in the source."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
-        # The fix was: input_event = event  # Save reference
-        assert "input_event" in source, (
-            "Must save event reference before async loop to avoid shadowing"
+        """The async iterator in _run_agent uses 'ag_event', not 'event',
+        so the on_input_submitted 'event' parameter is never shadowed."""
+        source = inspect.getsource(AgentManager._run_agent)
+        # The async iterator variable is 'ag_event', not 'event'
+        assert "ag_event" in source, (
+            "_run_agent must use 'ag_event' for async iterator to avoid shadowing"
         )
-        # After the async for loop, it must use input_event, not event
-        after_loop_idx = source.find("input_event.input.value")
-        assert after_loop_idx > 0, (
-            "After async for loop, must use input_event.input.value = ''"
+        # The on_input_submitted handler must still clear the input
+        chat_source = inspect.getsource(ChatScreen.on_input_submitted)
+        assert 'event.input.value = ""' in chat_source, (
+            "on_input_submitted must clear event.input.value after agent launch"
         )
 
 
@@ -431,10 +432,10 @@ class TestAgentErrorDuringStream:
             assert app.is_running, "App must not crash on agent stream error"
 
     def test_agent_error_wrapping_in_source(self) -> None:
-        """Verify the error handling wrapper exists in source."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """Verify the error handling wrapper exists in _run_agent source."""
+        source = inspect.getsource(AgentManager._run_agent)
         assert "Agent error" in source, (
-            "on_input_submitted must catch and display 'Agent error'"
+            "_run_agent must catch and display 'Agent error'"
         )
 
 
@@ -630,18 +631,18 @@ class TestTokenBufferingFlow:
 
     def test_full_response_list_in_source(self) -> None:
         """Source must use full_response: list[str] for token buffering."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(AgentManager._run_agent)
         assert "full_response: list[str]" in source or "full_response: list" in source, (
-            "on_input_submitted must declare full_response as a list for buffering"
+            "_run_agent must declare full_response as a list for buffering"
         )
 
     def test_tokens_appended_not_written_directly(self) -> None:
-        """Content tokens must be appended to full_response, not written directly.
+        """Content tokens must be appended to full_response and also written immediately.
 
-        Before refactoring, tokens were written directly. Now they go into
-        full_response and are rendered at the 'done' event.
+        After refactoring, tokens both append to full_response (for markdown rendering)
+        and get written immediately to the screen (for live streaming).
         """
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(AgentManager._run_agent)
 
         # Find the "content" event handler — tokens append to full_response
         content_section = source.split('kind == "content"')
@@ -654,21 +655,22 @@ class TestTokenBufferingFlow:
 
     def test_done_event_renders_full_response(self) -> None:
         """At 'done' event, full_response is rendered via _render_markdown."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        source = inspect.getsource(AgentManager._run_agent)
         assert "full_response" in source, "full_response must appear in source"
         assert "_render_markdown" in source, (
             "_render_markdown must be called on the full response text"
         )
 
     def test_assistant_label_before_formatted_output(self) -> None:
-        """Assistant: label must be written BEFORE the formatted markdown."""
-        source = inspect.getsource(ChatScreen.on_input_submitted)
+        """Assistant: label is written in on_input_submitted before agent launch;
+        _render_markdown is called later in _run_agent at the 'done' event.
+        This ensures the label always appears before formatted output at runtime."""
+        chat_source = inspect.getsource(ChatScreen.on_input_submitted)
+        agent_source = inspect.getsource(AgentManager._run_agent)
 
-        assistant_idx = source.find("Assistant:")
-        render_idx = source.find("_render_markdown")
-
-        assert assistant_idx > 0, "'Assistant:' label must exist in source"
-        assert render_idx > 0, "_render_markdown call must exist in source"
-        assert assistant_idx < render_idx, (
-            "'Assistant:' label must come BEFORE _render_markdown call"
+        assert "Assistant:" in chat_source, (
+            "'Assistant:' label must exist in on_input_submitted source"
+        )
+        assert "_render_markdown" in agent_source, (
+            "_render_markdown call must exist in _run_agent source"
         )

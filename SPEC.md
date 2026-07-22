@@ -17,6 +17,10 @@
 >
 > If a user has connected a provider and selected a model, sending a message MUST call the LLM — never return a stub. Graceful errors only when no provider is connected or no model is selected.
 
+### Upcoming: Parallel Multi-Agent Execution
+
+> See [`docs/specs/parallel-multi-agent.md`](docs/specs/parallel-multi-agent.md) for the full specification.  This feature will allow running multiple agents concurrently in separate session tabs — one session generating code while another researches, without blocking the UI or each other.  Estimated delivery: 4-6 weeks across 5 phases (session decoupling → agent checkpointing → concurrency manager → tabbed TUI → polish).
+
 ---
 
 ## 1. Tech Stack & Rationale
@@ -776,6 +780,10 @@ LangGraph provides context management middleware. Pyharness adds:
 - Manual compaction via `/compact`
 - Pre-compaction MemPalace capture (index before summary loss)
 - Configurable `reserved` token buffer
+
+### 7.6 Future: Parallel Multi-Agent Sessions
+
+> See [`docs/specs/parallel-multi-agent.md`](docs/specs/parallel-multi-agent.md) for the full specification. The current session system supports a single active session at a time. The parallel multi-agent spec defines a tabbed interface where multiple sessions run concurrently — each with its own model, agent, checkpointed state, and streaming output routed independently.
 
 ---
 

@@ -22,6 +22,7 @@ Public API
 
 from __future__ import annotations
 
+import asyncio
 import operator
 from collections.abc import AsyncIterator
 from typing import Annotated, Any, TypedDict
@@ -196,7 +197,11 @@ class AgentRunner:
         }
         self.child_sessions: list[str] = []  # IDs of child subagent sessions
 
-    async def run(self, user_message: str) -> AsyncIterator[dict[str, Any]]:
+    async def run(
+        self,
+        user_message: str,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         """Run the agent and stream event dictionaries.
 
         Yields events with the following shapes::
@@ -204,12 +209,17 @@ class AgentRunner:
             {"type": "content", "data": str}           # streaming token
             {"type": "tool_call", "data": {...}}       # tool invocation started
             {"type": "tool_result", "data": {...}}     # tool result
+            {"type": "interrupted", "data": None}      # cancelled by user
             {"type": "done", "data": None}             # agent finished
 
         Parameters
         ----------
         user_message:
             The natural-language user prompt to process.
+        cancel_event:
+            Optional :class:`asyncio.Event` that, when set, will interrupt
+            the agent loop.  The event is checked between each streaming
+            iteration.
 
         Yields
         ------
@@ -223,9 +233,16 @@ class AgentRunner:
             "model_name": self.model_name,
         }
 
+        cancelled = False
+
         async for event in self.graph.astream_events(
             initial_state, config=self.config, version="v2"
         ):
+            # R2.6: check cancel event between iterations
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+
             kind = event["event"]
 
             if kind == "on_chat_model_stream":
@@ -252,7 +269,10 @@ class AgentRunner:
                     },
                 }
 
-        yield {"type": "done", "data": None}
+        if cancelled:
+            yield {"type": "interrupted", "data": None}
+        else:
+            yield {"type": "done", "data": None}
 
     def spawn_subagent(
         self, agent_type: str, prompt: str, session_id: str
