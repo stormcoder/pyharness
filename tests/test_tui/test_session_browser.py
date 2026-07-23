@@ -127,7 +127,7 @@ def _make_fake_sessions(count: int = 3) -> list[FakeSession]:
                 project=f"project-{i}",
                 model="anthropic:claude-sonnet-4-5",
                 agent="build" if i % 2 == 1 else "plan",
-                status="active" if i <= count - 1 else "archived",
+                status="active" if count == 1 or i <= count - 1 else "archived",
                 total_tokens=i * 500,
             )
         )
@@ -643,4 +643,300 @@ class TestBulkSelectionAndDelete:
             browser, "action_delete_selected"
         ), (
             "SessionBrowser must have action_bulk_delete or action_delete_selected"
+        )
+
+
+# =============================================================================
+# Issue 1: Missing command references — BINDINGS completeness
+# =============================================================================
+
+
+class TestBindingsIncludeBulkOperations:
+    """SessionBrowser BINDINGS must include entries for space, ctrl+a, ctrl+d."""
+
+    def test_bindings_include_bulk_operations(self) -> None:
+        """SessionBrowser BINDINGS must include space (select), ctrl+a (select all),
+        ctrl+d (bulk delete) keybindings with descriptive names."""
+        store = FakeSessionStore()
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        # Collect binding keys and associated action names
+        bindings_map: dict[str, str] = {b[0]: b[1] for b in browser.BINDINGS}
+
+        # Space must toggle selection
+        assert "space" in bindings_map, (
+            "BINDINGS must include 'space' key for selection toggling. "
+            f"Bindings: {list(bindings_map)}"
+        )
+
+        # ctrl+a must select all
+        assert "ctrl+a" in bindings_map, (
+            "BINDINGS must include 'ctrl+a' for select all. "
+            f"Bindings: {list(bindings_map)}"
+        )
+
+        # ctrl+d must trigger bulk delete
+        assert "ctrl+d" in bindings_map, (
+            "BINDINGS must include 'ctrl+d' for bulk delete. "
+            f"Bindings: {list(bindings_map)}"
+        )
+
+        # The action for ctrl+d must be action_bulk_delete
+        assert bindings_map["ctrl+d"] == "action_bulk_delete", (
+            f"ctrl+d must map to 'action_bulk_delete', "
+            f"got '{bindings_map['ctrl+d']}'"
+        )
+
+
+# =============================================================================
+# Issue 2: Deleting last session must be prevented
+# =============================================================================
+
+
+class TestLastSessionProtection:
+    """Deleting the only remaining session must be refused with a warning."""
+
+    async def test_cannot_delete_last_session(self) -> None:
+        """action_delete_session() must refuse to delete the only session
+        in the store, showing a warning notification."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(1)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+
+            # Call delete — must be refused because it's the only session
+            screen.action_delete_session()
+
+        # After dismiss, the session must NOT have been deleted
+        session = store.get_session(sessions[0].id)
+        assert session is not None, (
+            "Last session must NOT be deleted from the store"
+        )
+        assert session.status == "active", (
+            f"Last session must remain active. Got status: {session.status!r}"
+        )
+
+    async def test_bulk_delete_cannot_delete_all_sessions(self) -> None:
+        """action_bulk_delete() with all sessions selected must refuse
+        or leave at least one session."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(2)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # Select ALL sessions
+            screen._selected_sessions = {s.id for s in sessions}
+            await pilot.pause()
+
+            screen.action_bulk_delete()
+
+        # Verify at least one session remains
+        remaining = [s for s in store.list_sessions()
+                     if s.status == "active"]
+        assert len(remaining) >= 1, (
+            f"Bulk delete of ALL sessions must leave at least one session. "
+            f"Remaining active: {len(remaining)}"
+        )
+
+    async def test_delete_currently_focused_session_protected(self) -> None:
+        """Deleting the session that is currently focused in the app must
+        leave the app in a valid state — the session must remain active,
+        not be archived."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(1)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+
+            # Try deleting the only focused session
+            screen.action_delete_session()
+
+        # The session must still be active — not archived or deleted
+        session = store.get_session(sessions[0].id)
+        assert session is not None, (
+            "Focused session must still exist in the store after delete attempt"
+        )
+        assert session.status == "active", (
+            f"Focused session must remain active. Got status: {session.status!r}. "
+            "The last remaining session must not be deletable."
+        )
+
+
+# =============================================================================
+# Issue 3: Multi-selection operations on delete / archive
+# =============================================================================
+
+
+class TestMultiSelectionOperations:
+    """Single-key actions must operate on all selected sessions, not just
+    the highlighted one."""
+
+    async def test_delete_with_multi_selection_deletes_all_selected(self) -> None:
+        """When 3 sessions are selected via _selected_sessions, pressing d
+        must delete all 3, not just the highlighted one."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # Select all 3 sessions
+            screen._selected_sessions = {s.id for s in sessions}
+            await pilot.pause()
+
+            screen.action_delete_session()
+
+        # All selected sessions should now be archived (soft-deleted)
+        for s in sessions:
+            stored = store.get_session(s.id)
+            assert stored is not None, f"Session {s.id} must still exist"
+            assert stored.status == "archived", (
+                f"Session {s.id} must be archived after multi-select delete. "
+                f"Got status: {stored.status!r}"
+            )
+
+    async def test_archive_with_multi_selection_archives_all_selected(self) -> None:
+        """When 3 sessions are selected, pressing a must archive all 3."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            screen._selected_sessions = {s.id for s in sessions}
+            await pilot.pause()
+
+            screen.action_archive()
+
+        # All selected sessions should be archived
+        for s in sessions:
+            stored = store.get_session(s.id)
+            assert stored is not None
+            assert stored.status == "archived", (
+                f"Session {s.id} must be archived after multi-select archive. "
+                f"Got status: {stored.status!r}"
+            )
+
+    def test_bulk_delete_action_removed_or_delegates(self) -> None:
+        """action_bulk_delete should either be removed or delegate to
+        action_delete_session — no duplicate delete logic.
+
+        The test verifies that we don't have two independent copies of
+        delete logic: either action_bulk_delete delegates to
+        action_delete_session, or action_delete_session itself handles
+        all selected sessions (making a separate bulk method redundant).
+        """
+        store = FakeSessionStore()
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        has_bulk = hasattr(browser, "action_bulk_delete")
+        has_single = hasattr(browser, "action_delete_session")
+
+        if has_bulk and has_single:
+            import inspect
+            bulk_src = inspect.getsource(browser.action_bulk_delete)  # type: ignore[arg-type]
+            single_src = inspect.getsource(browser.action_delete_session)  # type: ignore[arg-type]
+
+            # Check: does action_bulk_delete call action_delete_session?
+            bulk_calls_single = "action_delete_session" in bulk_src
+
+            # Check: does action_delete_session iterate over _selected_sessions?
+            # (not just discard one entry — actually iterate/loop)
+            single_iterates_selection = (
+                "for " in single_src and "_selected_sessions" in single_src
+            ) or (
+                "_selected_sessions" in single_src
+                and "discard" not in single_src
+            )
+
+            assert bulk_calls_single or single_iterates_selection, (
+                "Duplicate delete logic detected. Either action_bulk_delete "
+                "must call action_delete_session for each selected session, or "
+                "action_delete_session must iterate over _selected_sessions "
+                "to handle multi-selection (making action_bulk_delete redundant)."
+            )
+
+
+# =============================================================================
+# Issue 2 / Help message test
+# =============================================================================
+
+
+class TestLastSessionWarningMessages:
+    """Warning messages when deleting the last session must be meaningful."""
+
+    async def test_last_session_delete_shows_meaningful_warning(self) -> None:
+        """When trying to delete the last session, the warning message must
+        mention 'last session' or 'cannot delete'."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(1)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        # Monkey-patch notify to capture the warning text
+        captured_notify: list[tuple[str, str]] = []
+        _orig_notify = browser.notify
+
+        def _capture_notify(
+            message: str,
+            severity: str = "information",
+            timeout: float | None = None,
+        ) -> None:
+            captured_notify.append((message, severity))
+            _orig_notify(message, severity=severity, timeout=timeout)
+
+        browser.notify = _capture_notify  # type: ignore[assignment]
+
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+
+            screen.action_delete_session()
+
+        # Check for warning-level notification about last session
+        warnings = [(msg, sev) for msg, sev in captured_notify
+                    if sev == "warning"]
+        assert len(warnings) >= 1, (
+            f"Expected at least one warning-level notification when "
+            f"deleting last session. Got notifications: {captured_notify}"
+        )
+
+        warning_text = " ".join(msg for msg, _ in warnings).lower()
+        assert "last session" in warning_text or "cannot delete" in warning_text, (
+            f"Warning must mention 'last session' or 'cannot delete'. "
+            f"Got: {captured_notify}"
+        )
+
+        # Verify the session was NOT deleted
+        session = store.get_session(sessions[0].id)
+        assert session is not None, "Last session must not be deleted"
+        assert session.status == "active", (
+            f"Last session must remain active. Got: {session.status!r}"
         )

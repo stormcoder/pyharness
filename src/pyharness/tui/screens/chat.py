@@ -78,7 +78,7 @@ class ChatScreen(Screen):
     _slash_completions: list[str] = [
         "/new", "/undo", "/redo", "/sessions", "/help", "/compact",
         "/share", "/editor", "/export", "/models", "/themes", "/memory",
-        "/remember", "/connect", "/connect ", "/model ", "/variants",
+        "/remember", "/connect", "/model ", "/variants",
         "/mine", "/init",
     ]
 
@@ -671,7 +671,21 @@ class ChatScreen(Screen):
             if hasattr(self.app, 'action_connect'):
                 self.app.action_connect()
             else:
-                self._show_connect_dialog()
+                from pyharness.core.provider import list_available_providers
+                providers = list_available_providers()
+                self._write("[#8b949e]Available providers to connect:[/]")
+                for p in providers:
+                    self._write(
+                        f"  [#7ee787]{p}[/] — set {p.upper()}_API_KEY "
+                        f"env var or use /connect {p}"
+                    )
+                self._write(
+                    "[#8b949e]Example: export ANTHROPIC_API_KEY=sk-ant-...[/]"
+                )
+                self._write(
+                    "[#8b949e]Or add to "
+                    "~/.config/pyharness/pyharness.json provider section.[/]"
+                )
 
         elif cmd_name == "/models":
             self._handle_models_command()

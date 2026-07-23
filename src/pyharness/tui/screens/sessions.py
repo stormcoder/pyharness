@@ -163,7 +163,17 @@ class SessionBrowser(Screen[object]):
         self.dismiss("__new__")
 
     def action_archive(self) -> None:
-        """Mark the selected session as archived (soft-delete)."""
+        """Mark selected sessions as archived (soft-delete).
+
+        If multiple sessions are selected via ``_selected_sessions``,
+        archive all of them.  Otherwise archive the highlighted session.
+        """
+        # If sessions are multi-selected, archive all selected
+        if self._selected_sessions:
+            self._action_bulk_archive()
+            return
+
+        # Otherwise, single-session archive
         session_id = self._selected_session_id()
         if session_id is None:
             self.notify("No session selected", severity="warning")
@@ -182,8 +192,53 @@ class SessionBrowser(Screen[object]):
         )
         self._refresh_list()
 
+    def _action_bulk_archive(self) -> None:
+        """Archive all multi-selected sessions."""
+        store = self._resolve_store()
+        if store is None:
+            self.notify("Session store not available", severity="error")
+            return
+        count = 0
+        for sid in list(self._selected_sessions):
+            try:
+                store.delete_session(sid)  # soft-delete = archive
+                count += 1
+            except Exception:
+                pass
+        self._selected_sessions.clear()
+        self.notify(f"Archived {count} session(s)")
+        self._refresh_list()
+
     def action_delete_session(self) -> None:
-        """Permanently remove the selected session from the store."""
+        """Permanently remove selected sessions from the store.
+
+        If multiple sessions are selected via ``_selected_sessions``,
+        delete all of them.  Otherwise delete the highlighted session.
+        Refuses to delete the **last remaining session** (single session
+        only — multi-select bypasses this guard for bulk workflows).
+        """
+        # If sessions are multi-selected, delete all selected
+        if self._selected_sessions:
+            store = self._resolve_store()
+            if store is None:
+                self.notify("Session store not available", severity="error")
+                return
+            count = 0
+            for sid in list(self._selected_sessions):
+                try:
+                    if hasattr(store, "hard_delete"):
+                        store.hard_delete(sid)
+                    else:
+                        store.delete_session(sid)
+                    count += 1
+                except Exception:
+                    pass
+            self._selected_sessions.clear()
+            self.notify(f"Deleted {count} session(s)")
+            self._refresh_list()
+            return
+
+        # Otherwise, single-session delete
         session_id = self._selected_session_id()
         if session_id is None:
             self.notify("No session selected", severity="warning")
@@ -192,6 +247,29 @@ class SessionBrowser(Screen[object]):
         if store is None:
             self.notify("Session store not available", severity="error")
             return
+
+        # Guard: never delete the last remaining session (single only)
+        try:
+            all_sessions = store.list_sessions()
+        except Exception:
+            all_sessions = []
+        if len(all_sessions) <= 1:
+            self.notify(
+                "Cannot delete the last session",
+                severity="warning",
+            )
+            return
+
+        # Guard: refuse to delete the currently focused session
+        if hasattr(self.app, "_focused_session_id") and (
+            session_id == self.app._focused_session_id  # type: ignore[union-attr]
+        ):
+            self.notify(
+                "Cannot delete the focused session — switch to another session first",
+                severity="warning",
+            )
+            return
+
         try:
             # Use hard_delete when available, fall back to soft-delete
             if hasattr(store, "hard_delete"):
@@ -217,7 +295,10 @@ class SessionBrowser(Screen[object]):
         self._refresh_list()
 
     def action_bulk_delete(self) -> None:
-        """Permanently delete all selected sessions."""
+        """Permanently delete all selected sessions.
+
+        Refuses if the selection would delete **every** session in the store.
+        """
         if not self._selected_sessions:
             self.notify("No sessions selected — press Space to select", severity="warning")
             return
@@ -225,6 +306,19 @@ class SessionBrowser(Screen[object]):
         if store is None:
             self.notify("Session store not available", severity="error")
             return
+
+        # Guard: cannot delete ALL sessions
+        try:
+            all_sessions = store.list_sessions()
+        except Exception:
+            all_sessions = []
+        if len(self._selected_sessions) >= len(all_sessions):
+            self.notify(
+                "Cannot delete all sessions",
+                severity="warning",
+            )
+            return
+
         count = 0
         for sid in list(self._selected_sessions):
             try:

@@ -42,6 +42,11 @@ BUILTIN_COMMANDS: dict[str, str] = {
     "/themes": "List available themes",
     "/memory": "Search project memory",
     "/remember": "Store a fact in memory",
+    "/connect": "Connect to a model provider",
+    "/share": "Share current session",
+    "/model": "Switch to a specific model",
+    "/variants": "List model variants",
+    "/init": "Create or update AGENTS.md",
 }
 
 

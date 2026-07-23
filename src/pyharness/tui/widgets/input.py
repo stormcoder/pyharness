@@ -41,7 +41,7 @@ class PromptInput(Input):
     SLASH_COMMANDS: list[str] = [
         "/new", "/undo", "/redo", "/sessions", "/help", "/compact",
         "/editor", "/export", "/models", "/themes", "/memory", "/remember",
-        "/connect", "/connect ", "/model ", "/variants", "/mine",
+        "/connect", "/model ", "/variants", "/mine",
     ]
 
     _autocomplete_sources: list[str] = []

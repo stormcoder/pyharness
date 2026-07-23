@@ -821,3 +821,98 @@ class TestMouseTextSelection:
         assert 'TextArea(id="select-overlay"' in source, (
             "ChatScreen.compose must create TextArea with id='select-overlay'"
         )
+
+
+# =============================================================================
+# Issue 4: Duplicate /connect commands
+# =============================================================================
+
+
+class TestConnectCommandDedup:
+    """/connect must appear exactly once in COMMANDS and completions."""
+
+    def test_connect_appears_once_in_commands(self) -> None:
+        """/connect must appear exactly ONCE in ChatScreen.COMMANDS dict."""
+        connect_count = sum(
+            1 for k in ChatScreen.COMMANDS if k == "/connect"
+        )
+        assert connect_count == 1, (
+            f"/connect appears {connect_count} time(s) in COMMANDS dict — "
+            "must appear exactly ONCE"
+        )
+
+    def test_connect_appears_once_in_slash_completions(self) -> None:
+        """/connect must appear exactly ONCE in _slash_completions list."""
+        completions = getattr(ChatScreen, "_slash_completions", [])
+        connect_count = sum(1 for c in completions if c.strip() == "/connect")
+        assert connect_count == 1, (
+            f"/connect appears {connect_count} time(s) in _slash_completions — "
+            f"must appear exactly ONCE. Completions: {completions}"
+        )
+
+    def test_loader_has_all_builtin_commands(self) -> None:
+        """CommandLoader.BUILTIN_COMMANDS must include /connect, /share,
+        /model, /variants, /init."""
+        from pyharness.commands.loader import BUILTIN_COMMANDS
+
+        required = ["/connect", "/share", "/model", "/variants", "/init"]
+        missing = [c for c in required if c not in BUILTIN_COMMANDS]
+        assert not missing, (
+            f"BUILTIN_COMMANDS missing required entries: {missing}. "
+            f"Current keys: {list(BUILTIN_COMMANDS)}"
+        )
+
+    def test_no_connect_space_variant_in_completions(self) -> None:
+        """No '/connect ' (trailing space) variant in _slash_completions.
+        Argument parsing should handle arguments, not separate completions."""
+        completions = getattr(ChatScreen, "_slash_completions", [])
+        space_variants = [c for c in completions if c == "/connect "]
+        assert not space_variants, (
+            f"Found '/connect ' (trailing space) variant in completions. "
+            f"Use argument parsing instead. Completions: {completions}"
+        )
+
+    def test_no_dead_show_connect_dialog(self) -> None:
+        """ChatScreen must NOT reference an undefined _show_connect_dialog method."""
+        # Search the ENTIRE ChatScreen source code for references to
+        # _show_connect_dialog
+        source = inspect.getsource(ChatScreen)
+        has_reference = "_show_connect_dialog" in source
+        has_definition = hasattr(ChatScreen, "_show_connect_dialog")
+
+        # If referenced, it MUST be defined
+        if has_reference:
+            assert has_definition, (
+                "ChatScreen references _show_connect_dialog but does not "
+                "define it. Either define the method or remove the reference."
+            )
+
+    def test_connect_command_consistent_description(self) -> None:
+        """All appearances of '/connect' in COMMANDS dicts must have the
+        same description."""
+        # Check ChatScreen.COMMANDS
+        if "/connect" in ChatScreen.COMMANDS:
+            cs_desc = ChatScreen.COMMANDS["/connect"]
+        else:
+            cs_desc = None
+
+        # Check BUILTIN_COMMANDS
+        from pyharness.commands.loader import BUILTIN_COMMANDS
+        if "/connect" in BUILTIN_COMMANDS:
+            bl_desc = BUILTIN_COMMANDS["/connect"]
+        else:
+            bl_desc = None
+
+        # If an override key like "/connect " (with space) exists, fail
+        space_variants = [k for k in ChatScreen.COMMANDS if k.startswith("/connect ") and k != "/connect"]
+        assert not space_variants, (
+            f"Found space-variant /connect commands in COMMANDS: {space_variants}"
+        )
+
+        # If both exist, descriptions must match
+        if cs_desc is not None and bl_desc is not None:
+            assert cs_desc == bl_desc, (
+                f"Inconsistent /connect descriptions. "
+                f"ChatScreen.COMMANDS: {cs_desc!r}, "
+                f"BUILTIN_COMMANDS: {bl_desc!r}"
+            )
