@@ -266,6 +266,14 @@ class AgentManager:
                 session_id=session_id,
             )
             screen._write(f"\n[#f85149]Agent error: {exc}[/]")
+            # PERSIST THE ERROR
+            try:
+                from pyharness.core.session import Message
+                store = getattr(screen.app, '_session_store', None)
+                if store:
+                    store.add_message(session_id, Message(role="error", content=f"Agent error: {exc}"))
+            except Exception:
+                pass
         finally:
             # Clean up: remove from tasks and drain queue
             if session_id in self._tasks:

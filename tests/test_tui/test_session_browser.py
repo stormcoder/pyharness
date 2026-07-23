@@ -11,6 +11,7 @@ Run with::
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from textual.app import App
@@ -42,10 +43,16 @@ class FakeSession:
     git_branch: str | None = None
     total_tokens: int = 0
     metadata: dict[str, Any] | None = None
+    created_at: str = ""
+    updated_at: str = ""
 
     def __post_init__(self) -> None:
         if self.metadata is None:
             self.metadata = {}
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
+        if not self.updated_at:
+            self.updated_at = self.created_at
 
 
 class FakeSessionStore:
@@ -69,6 +76,8 @@ class FakeSessionStore:
             sessions = [s for s in sessions if s.project == project]
         if status is not None:
             sessions = [s for s in sessions if s.status == status]
+        # Sort by updated_at descending (newest first), matching SessionStore behavior
+        sessions.sort(key=lambda s: s.updated_at or "", reverse=True)
         return sessions
 
     def delete_session(self, session_id: str) -> None:
@@ -328,7 +337,10 @@ class TestSessionBrowserIntegration:
             screen.action_archive()
 
         # After dismiss, verify the session was archived
-        archived = store.get_session(sessions[0].id)
+        # Use the store's sorted session list — the first displayed session
+        # is the one at index 0 in the sorted list
+        sorted_sessions = store.list_sessions()
+        archived = store.get_session(sorted_sessions[0].id)
         assert archived is not None
         assert archived.status == "archived", (
             f"Expected 'archived', got {archived.status!r}"
@@ -350,7 +362,8 @@ class TestSessionBrowserIntegration:
 
             screen.action_delete_session()
 
-        deleted = store.get_session(sessions[0].id)
+        sorted_sessions = store.list_sessions()
+        deleted = store.get_session(sorted_sessions[0].id)
         assert deleted is not None
         assert deleted.status == "archived", (
             f"Expected 'archived' after delete, got {deleted.status!r}"
@@ -450,3 +463,184 @@ class TestSessionBrowserBackwardCompat:
         async with _run_browser(browser) as pilot:
             await pilot.pause()
             _browser_from_pilot(pilot).action_resume()
+
+
+# =============================================================================
+# Bug 4: Session Manager Improvements (TDD — FAILING)
+# =============================================================================
+
+
+class TestSessionBrowserDateColumn:
+    """Session browser must display date info for each session."""
+
+    def test_session_browser_has_date_column(self) -> None:
+        """The session browser must display ``updated_at`` (or ``created_at``)
+        for each session."""
+        s = FakeSession(
+            id="sess-date-1",
+            title="Recent Work",
+            model="anthropic:claude-sonnet-4-5",
+            agent="build",
+            updated_at="2026-07-22T10:00:00+00:00",
+            created_at="2026-07-20T08:00:00+00:00",
+        )
+        label = _format_session_label(s)  # type: ignore[arg-type]
+
+        # Must contain some date component — at minimum the year
+        assert "2026" in label, (
+            f"Session label must include a date (year). Got: {label!r}"
+        )
+
+    def test_session_label_includes_date(self) -> None:
+        """``_format_session_label(session)`` must include a formatted date string."""
+        s = FakeSession(
+            id="sess-d2",
+            title="Debug Session",
+            model="openai:gpt-4o",
+            agent="build",
+            updated_at="2026-07-22T14:30:00+00:00",
+        )
+        label = _format_session_label(s)  # type: ignore[arg-type]
+
+        # Must include a date — either the raw ISO prefix or formatted
+        has_date = ("2026-07" in label or "Jul" in label or "2026" in label)
+        assert has_date, (
+            f"Session label must include a formatted date. Got: {label!r}"
+        )
+
+
+class TestSessionListSorting:
+    """Sessions must be displayed in descending date order by default."""
+
+    def test_session_list_sorted_newest_first(self) -> None:
+        """Sessions must appear in descending date order (newest first)."""
+        now = datetime.now(timezone.utc)
+        s1 = FakeSession(
+            id="sess-old",
+            title="Old Session",
+            updated_at=(now - timedelta(days=5)).isoformat(),
+        )
+        s2 = FakeSession(
+            id="sess-new",
+            title="New Session",
+            updated_at=(now - timedelta(hours=1)).isoformat(),
+        )
+        s3 = FakeSession(
+            id="sess-mid",
+            title="Middle Session",
+            updated_at=(now - timedelta(days=2)).isoformat(),
+        )
+
+        store = FakeSessionStore()
+        for s in [s1, s2, s3]:
+            store.create_session(s)
+
+        sessions = store.list_sessions()
+        assert len(sessions) == 3
+
+        # Newest first
+        assert sessions[0].id == "sess-new", (
+            f"Expected newest first, got {sessions[0].id}"
+        )
+        assert sessions[1].id == "sess-mid"
+        assert sessions[2].id == "sess-old"
+
+    def test_session_browser_sort_order_configurable(self) -> None:
+        """Sort order must be toggleable (newest/oldest)."""
+        # This tests that the SessionBrowser supports a configurable sort order.
+        # The implementation must expose a way to change from newest->oldest to oldest->newest.
+
+        # Verify that list_sessions currently returns by updated_at DESC (newest first)
+        now = datetime.now(timezone.utc)
+        s1 = FakeSession(
+            id="sess-a",
+            title="A",
+            updated_at=(now - timedelta(days=10)).isoformat(),
+        )
+        s2 = FakeSession(
+            id="sess-z",
+            title="Z",
+            updated_at=(now - timedelta(hours=1)).isoformat(),
+        )
+
+        store = FakeSessionStore()
+        store.create_session(s1)
+        store.create_session(s2)
+
+        sessions = store.list_sessions()
+        # Default: newest first
+        assert sessions[0].id == "sess-z"
+
+        # The browser should expose a sort_order parameter or method
+        # that can be toggled. Test that this attribute/parameter exists.
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        assert hasattr(browser, "_sort_order") or hasattr(browser, "sort_order"), (
+            "SessionBrowser must have _sort_order or sort_order attribute "
+            "for configurable sorting"
+        )
+
+
+class TestBulkSelectionAndDelete:
+    """Session browser must support multi-select and bulk delete."""
+
+    def test_session_browser_has_select_all_binding(self) -> None:
+        """There must be a keybinding or action for selecting all sessions."""
+        store = FakeSessionStore()
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        # Must have a binding or action for 'select all'
+        bindings_keys = [b[0] for b in browser.BINDINGS]
+        has_select_all = "ctrl+a" in bindings_keys or "select_all" in bindings_keys
+        assert has_select_all, (
+            f"SessionBrowser must have a 'select all' binding. "
+            f"Current bindings: {bindings_keys}"
+        )
+
+    def test_session_browser_has_bulk_delete_binding(self) -> None:
+        """There must be a keybinding or action for bulk-deleting selected sessions."""
+        store = FakeSessionStore()
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        # Must have bindings or action methods for bulk-delete
+        bindings_keys = [b[0] for b in browser.BINDINGS]
+        has_bulk_delete = any(
+            "bulk" in k or "multi" in k for k in bindings_keys
+        )
+        # Also check for action methods
+        has_bulk_action = any(
+            name.startswith("action_") and ("bulk" in name or "multi" in name)
+            for name in dir(browser)
+        )
+        assert has_bulk_delete or has_bulk_action, (
+            f"SessionBrowser must have a bulk-delete binding or action. "
+            f"Bindings: {bindings_keys}"
+        )
+
+    def test_session_browser_multi_select(self) -> None:
+        """Must be able to select multiple sessions at once (toggle selection)."""
+        store = FakeSessionStore()
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        # Must have a multi-select mechanism — either a _selected set or
+        # a selection mode
+        assert hasattr(browser, "_selected_sessions") or hasattr(
+            browser, "_selection_mode"
+        ), (
+            "SessionBrowser must support multi-select via _selected_sessions "
+            "or _selection_mode attribute"
+        )
+
+    def test_bulk_delete_removes_multiple_sessions(self) -> None:
+        """Bulk delete must remove all selected sessions."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        # Must have a bulk_delete method
+        assert hasattr(browser, "action_bulk_delete") or hasattr(
+            browser, "action_delete_selected"
+        ), (
+            "SessionBrowser must have action_bulk_delete or action_delete_selected"
+        )

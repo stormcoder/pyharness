@@ -294,6 +294,14 @@ class SessionStore:
         )
         self._db.commit()
 
+    def hard_delete(self, session_id: str) -> None:
+        """Permanently delete a session and all its messages from the database.
+
+        Messages are cascade-deleted via the FOREIGN KEY constraint.
+        """
+        self._db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        self._db.commit()
+
     # -- CRUD: messages ---------------------------------------------------------
 
     def add_message(self, session_id: str, message: Message) -> None:

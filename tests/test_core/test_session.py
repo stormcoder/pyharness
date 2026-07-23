@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pyharness.core.session import Message, Session, SessionStore
 
 # ---------------------------------------------------------------------------
@@ -231,3 +233,83 @@ def test_session_metadata_roundtrip(store: SessionStore) -> None:
         "editor": "vim",
         "env": {"DEBUG": "1"},
     }
+
+
+# ===========================================================================
+# Bug 3: Hard Delete (TDD — FAILING)
+# ===========================================================================
+
+
+class TestHardDelete:
+    """SessionStore must support permanent row deletion (hard_delete)."""
+
+    def test_hard_delete_removes_row(self, store: SessionStore) -> None:
+        """``store.hard_delete(session_id)`` must remove the row from the
+        database entirely — get_session returns None after."""
+        s = _make_session()
+        store.create_session(s)
+
+        # Confirm session exists
+        assert store.get_session(s.id) is not None
+
+        # Hard delete
+        store.hard_delete(s.id)
+
+        # Session must be gone entirely
+        assert store.get_session(s.id) is None, (
+            "hard_delete() must permanently remove the session row. "
+            "get_session() should return None."
+        )
+
+    def test_hard_delete_removes_messages(self, store: SessionStore) -> None:
+        """Hard-deleting a session must cascade-delete its messages."""
+        s = _make_session()
+        store.create_session(s)
+
+        msg1 = _make_message(role="user", content="First")
+        msg2 = _make_message(role="assistant", content="Second")
+        store.add_message(s.id, msg1)
+        store.add_message(s.id, msg2)
+
+        # Confirm messages exist via direct query
+        db = store._db
+        count_before = db.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (s.id,)
+        ).fetchone()[0]
+        assert count_before == 2
+
+        # Hard delete
+        store.hard_delete(s.id)
+
+        # Messages for this session must be gone
+        count_after = db.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (s.id,)
+        ).fetchone()[0]
+        assert count_after == 0, (
+            f"hard_delete() must cascade-delete messages. "
+            f"Found {count_after} messages still in DB."
+        )
+
+    def test_delete_session_still_soft_deletes(self, store: SessionStore) -> None:
+        """Existing ``delete_session()`` must still soft-delete (backward compat)."""
+        s = _make_session()
+        store.create_session(s)
+
+        store.delete_session(s.id)
+
+        loaded = store.get_session(s.id)
+        assert loaded is not None, (
+            "Soft-delete must retain the row — get_session() must still find it"
+        )
+        assert loaded.status == "archived", (
+            f"Soft-delete must set status='archived', got {loaded.status!r}"
+        )
+
+    def test_hard_delete_nonexistent_does_not_raise(self, store: SessionStore) -> None:
+        """``hard_delete('nonexistent')`` must not raise an exception."""
+        try:
+            store.hard_delete("sess-nonexistent-xyz")
+        except Exception as exc:
+            pytest.fail(
+                f"hard_delete() on nonexistent session must not raise: {exc}"
+            )

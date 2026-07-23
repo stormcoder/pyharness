@@ -62,13 +62,15 @@ def _format_session_label(session: Session) -> str:
     title = (session.title or "Untitled")[:50]
     model = session.model or "\u2014"
     agent = session.agent or "build"
+    updated = session.updated_at[:10] if session.updated_at else ""
 
     return (
         f"[bold]{title}[/]  "
         f"[{color}]{icon} {session.status}[/]  "
         f"[#8b949e]{model} \u00b7 {agent}[/]  "
         f"[#58a6ff]{tokens}[/]  "
-        f"[#484f58]{sid}[/]"
+        f"[#484f58]{sid}[/]  "
+        f"[#6e7681]{updated}[/]"
     )
 
 
@@ -93,6 +95,9 @@ class SessionBrowser(Screen[object]):
         ("n", "new_session", "New"),
         ("a", "archive", "Archive"),
         ("d", "delete_session", "Delete"),
+        ("ctrl+a", "select_all", "All"),
+        ("ctrl+d", "action_bulk_delete", "Bulk Del"),
+        ("space", "toggle_selection", "Select"),
     ]
 
     _sessions: list[Session]
@@ -107,6 +112,8 @@ class SessionBrowser(Screen[object]):
         super().__init__(name=name, id=id, classes=classes)
         self._session_store: SessionStore | None = session_store
         self._sessions: list[Session] = []
+        self._selected_sessions: set[str] = set()
+        self._sort_order: str = "newest"
 
     # ------------------------------------------------------------------
     # Composition
@@ -186,17 +193,61 @@ class SessionBrowser(Screen[object]):
             self.notify("Session store not available", severity="error")
             return
         try:
-            # NOTE: SessionStore.delete_session() soft-deletes (status='archived').
-            # True permanent row deletion requires SessionStore.hard_delete()
-            # which does not exist yet.  For now we soft-delete; the session
-            # will be filtered out of default list-view queries (status filter).
-            store.delete_session(session_id)
+            # Use hard_delete when available, fall back to soft-delete
+            if hasattr(store, "hard_delete"):
+                store.hard_delete(session_id)
+            else:
+                store.delete_session(session_id)
         except Exception as exc:
             self.notify(f"Delete failed: {exc}", severity="error")
             return
+        self._selected_sessions.discard(session_id)
         self.notify(
             f"Deleted session {_truncate_id(session_id)}",
         )
+        self._refresh_list()
+
+    def action_select_all(self) -> None:
+        """Select all visible sessions."""
+        if not self._sessions:
+            self.notify("No sessions to select", severity="warning")
+            return
+        for s in self._sessions:
+            self._selected_sessions.add(s.id)
+        self._refresh_list()
+
+    def action_bulk_delete(self) -> None:
+        """Permanently delete all selected sessions."""
+        if not self._selected_sessions:
+            self.notify("No sessions selected — press Space to select", severity="warning")
+            return
+        store = self._resolve_store()
+        if store is None:
+            self.notify("Session store not available", severity="error")
+            return
+        count = 0
+        for sid in list(self._selected_sessions):
+            try:
+                if hasattr(store, "hard_delete"):
+                    store.hard_delete(sid)
+                else:
+                    store.delete_session(sid)
+                count += 1
+            except Exception:
+                pass
+        self._selected_sessions.clear()
+        self.notify(f"Deleted {count} session(s)")
+        self._refresh_list()
+
+    def action_toggle_selection(self) -> None:
+        """Toggle selection of the currently highlighted session."""
+        session_id = self._selected_session_id()
+        if session_id is None:
+            return
+        if session_id in self._selected_sessions:
+            self._selected_sessions.discard(session_id)
+        else:
+            self._selected_sessions.add(session_id)
         self._refresh_list()
 
     # ------------------------------------------------------------------
@@ -242,6 +293,13 @@ class SessionBrowser(Screen[object]):
             sessions = []
 
         self._sessions = list(sessions)
+
+        # Sort by updated_at based on _sort_order preference
+        if self._sort_order == "newest":
+            self._sessions.sort(key=lambda s: s.updated_at or "", reverse=True)
+        else:
+            self._sessions.sort(key=lambda s: s.updated_at or "")
+
         list_view: ListView = self.query_one("#sb-list", ListView)
         list_view.clear()
 
@@ -249,8 +307,11 @@ class SessionBrowser(Screen[object]):
             self._show_empty("No saved sessions yet")
             return
 
-        for s in sessions:
+        for s in self._sessions:
             raw = _format_session_label(s)
+            # Highlight selected sessions
+            if s.id in self._selected_sessions:
+                raw = f"[#d29922 on #3d2e00] {raw} [/]"
             list_view.append(ListItem(Static(raw)))
 
     def _show_empty(self, message: str) -> None:

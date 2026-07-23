@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .activity import CylonIndicator
 from .at_autocomplete import AtAutocomplete
 from .briefing import SessionBriefing
 from .file_tree import FileTree
@@ -14,6 +15,7 @@ from .status import StatusBar
 
 __all__ = [
     "AtAutocomplete",
+    "CylonIndicator",
     "FileTree",
     "MemoryTab",
     "MessageWidget",

@@ -1226,15 +1226,33 @@ The chat output area renders responses with full Rich markup formatting.
 | `gg`/`G` | Top/bottom of chat |
 ### 14.4 Status Bar
 
-The bottom-docked status bar provides persistent session context:
+The bottom-docked status bar provides persistent session context and
+an animated Cylon/KITT LED activity indicator.
+
+**Layout:**
+
+```
+[◉ ○ ○ ○ ○ ○ ○ ○] build | anthropic:claude-sonnet-4-5 | anthropic | 4,231 tokens
+```
+
+**CylonIndicator** (`src/pyharness/tui/widgets/activity.py`):
+
+| Property | Detail |
+|----------|--------|
+| **LED count** | 8 (configurable via ``led_count=N``) |
+| **Lit character** | ``◉`` (green ``#7ee787``) |
+| **Dim character** | ``○`` (dim gray ``#30363d``) |
+| **Animation** | Lit LED scans left → right → left (Cylon/KITT bounce), 150ms per frame |
+| **Idle state** | All LEDs dim when no agent is running |
+| **Activation** | ``ChatScreen.set_activity_running(True)`` called at agent start, ``False`` in finally block |
 
 **Format**: `{agent} | {model} | {provider} | {tokens}`
 
 Examples:
 ```
-build | anthropic:claude-sonnet-4-5 | anthropic | 4,231 tokens
-plan  | openai:gpt-5               | openai    | 12,820 tokens
-build |                             |           | 0 tokens
+[◉ ○ ○ ○ ○ ○ ○ ○] build | anthropic:claude-sonnet-4-5 | anthropic | 4,231 tokens
+[○ ○ ○ ○ ○ ○ ○ ○] plan  | openai:gpt-5               | openai    | 12,820 tokens
+[○ ○ ◉ ○ ○ ○ ○ ○] build |                             |           | 0 tokens
 ```
 
 **Rules**:

@@ -580,3 +580,122 @@ def test_agent_runner_initial_state_uses_agent_name() -> None:
     assert "build" in prompt, (
         "System prompt should include the agent_name ('build')"
     )
+
+
+# ===========================================================================
+# Bug 1: Recursion Error Protection (TDD — FAILING)
+# ===========================================================================
+
+
+def test_agent_runner_config_includes_recursion_limit() -> None:
+    """AgentRunner.run() must pass ``recursion_limit`` in the config dict
+    to astream_events."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    # The config dict stored on the runner MUST include a recursion_limit key
+    assert "recursion_limit" in runner.config, (
+        "AgentRunner.config must include 'recursion_limit' key. "
+        f"Got keys: {list(runner.config.keys())}"
+    )
+
+
+def test_agent_runner_default_recursion_limit_reasonable() -> None:
+    """Default recursion_limit must be between 25 and 100 (inclusive)."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    recursion_limit = runner.config.get("recursion_limit")
+    assert recursion_limit is not None, (
+        "AgentRunner.config must contain 'recursion_limit'"
+    )
+    assert 25 <= recursion_limit <= 100, (
+        f"Default recursion_limit {recursion_limit} must be between 25 and 100"
+    )
+
+
+def test_agent_runner_accepts_custom_recursion_limit() -> None:
+    """AgentRunner.__init__ must accept ``recursion_limit: int = 50`` parameter."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+
+    # Custom recursion_limit
+    runner_custom = AgentRunner(
+        graph, "s1", "build", "test:fake", recursion_limit=75
+    )
+    assert runner_custom.config.get("recursion_limit") == 75, (
+        "Custom recursion_limit=75 must be stored in runner.config"
+    )
+
+    # Default recursion_limit
+    runner_default = AgentRunner(graph, "s2", "build", "test:fake")
+    assert runner_default.config.get("recursion_limit") == 50, (
+        "Default recursion_limit must be 50"
+    )
+
+
+@pytest.mark.asyncio
+async def test_graph_recursion_error_caught() -> None:
+    """AgentRunner.run() must catch ``GraphRecursionError`` and yield an error
+    event instead of crashing."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+
+    from langgraph.errors import GraphRecursionError
+
+    runner = AgentRunner(graph, "s-recursion", "build", "test:fake")
+
+    # Make astream_events raise GraphRecursionError
+    async def _raise_recursion(*args: object, **kwargs: object) -> AsyncIterator[dict]:
+        raise GraphRecursionError("Recursion limit of 25 reached")
+        yield  # type: ignore[unreachable]
+
+    with patch.object(graph, "astream_events", _raise_recursion):
+        events: list[dict] = []
+        # Must NOT raise — should catch the error
+        async for event in runner.run("hello"):
+            events.append(event)
+
+    assert len(events) >= 1, "Expected at least one error event"
+    # Should contain an error event, not a crash
+    assert any(e.get("type") == "error" for e in events), (
+        f"Expected an error event when GraphRecursionError occurs, got: {events}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_graph_recursion_error_yields_error_event() -> None:
+    """When GraphRecursionError occurs, the error event must contain meaningful
+    data about what went wrong."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+
+    from langgraph.errors import GraphRecursionError
+
+    runner = AgentRunner(graph, "s-rec", "build", "test:fake")
+
+    async def _raise_recursion(*args: object, **kwargs: object) -> AsyncIterator[dict]:
+        raise GraphRecursionError("Recursion limit reached — loop may be infinite")
+        yield  # type: ignore[unreachable]
+
+    with patch.object(graph, "astream_events", _raise_recursion):
+        events: list[dict] = []
+        async for event in runner.run("trigger loop"):
+            events.append(event)
+
+    error_events = [e for e in events if e.get("type") == "error"]
+    assert len(error_events) >= 1, (
+        f"Expected at least one error event, got events: {events}"
+    )
+
+    error_event = error_events[0]
+    assert "data" in error_event, "Error event must have 'data' key"
+    assert isinstance(error_event["data"], str), "Error data must be a string"
+    assert len(error_event["data"]) > 0, "Error message must not be empty"
+    # The error message should mention recursion or loop
+    msg_lower = error_event["data"].lower()
+    assert any(
+        word in msg_lower for word in ("recursion", "loop", "limit")
+    ), f"Error message should mention recursion, loop, or limit: {error_event['data']!r}"

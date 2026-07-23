@@ -537,3 +537,82 @@ def test_format_message_tool() -> None:
     )
     assert "print('hello world')" in result, "Tool result must appear"
     assert "src/main.py" in result, "Tool args must appear in input"
+
+
+# ===========================================================================
+# Bug 2: Errors Exported to Markdown (TDD — FAILING)
+# ===========================================================================
+
+
+class TestErrorMessagesExported:
+    """Error messages from agent runs must be persisted and exported."""
+
+    def test_export_includes_error_messages(self) -> None:
+        """When a session has a Message with role='error', the export MUST
+        include it with distinct formatting (red/error section)."""
+        from pyharness.core.session_export import export_session_to_markdown
+
+        session = _make_session()
+        session.messages = [
+            _make_message(role="user", content="Build a recursive agent"),
+            _make_message(
+                role="error",
+                content="Graph recursion limit reached — agent loop exceeded 50 iterations",
+            ),
+        ]
+        result_path = export_session_to_markdown(session)
+        content = result_path.read_text()
+
+        # The error content must appear verbatim
+        assert "Graph recursion limit reached" in content, (
+            "Error message content must appear in export"
+        )
+        # Error section must be visually distinct
+        assert "## Error" in content or "**Error:**" in content, (
+            "Error role must produce distinct formatting like '## Error' or '**Error:**'"
+        )
+
+    def test_format_message_error_role(self) -> None:
+        """``format_message()`` must handle role='error' and produce distinct
+        formatting (e.g., ``**Error:**`` with red-style content)."""
+        from pyharness.core.session_export import format_message
+
+        msg = _make_message(
+            id="msg-err-01",
+            role="error",
+            content="Graph recursion limit reached — loop may be infinite",
+        )
+
+        result = format_message(msg)
+
+        assert isinstance(result, str)
+        assert "Error" in result, (
+            f"format_message(role='error') must include 'Error' label. Got: {result!r}"
+        )
+        assert "Graph recursion limit reached" in result, (
+            "Error content must be preserved verbatim"
+        )
+        # Error formatting must be distinct from user/assistant (not just a generic heading)
+        assert result != format_message(
+            _make_message(role="user", content="something")
+        ), "Error formatting must differ from user message formatting"
+
+    def test_error_message_content_preserved(self) -> None:
+        """The error text 'Graph recursion limit reached' must appear verbatim
+        in the export."""
+        from pyharness.core.session_export import export_session_to_markdown
+
+        error_text = "Graph recursion limit reached"
+        session = _make_session()
+        session.messages = [
+            _make_message(role="user", content="help"),
+            _make_message(role="assistant", content="Let me try..."),
+            _make_message(role="error", content=error_text),
+        ]
+        result_path = export_session_to_markdown(session)
+        content = result_path.read_text()
+
+        assert error_text in content, (
+            f"Error text '{error_text}' must appear verbatim in the export. "
+            f"Content:\n{content}"
+        )

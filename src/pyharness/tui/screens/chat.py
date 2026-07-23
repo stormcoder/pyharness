@@ -18,6 +18,7 @@ from textual.screen import Screen
 from textual.widgets import Input, RichLog, TextArea
 
 from pyharness.core.session import Message
+from pyharness.tui.widgets.activity import CylonIndicator
 from pyharness.tui.widgets.input import PromptInput
 from pyharness.tui.widgets.sidebar import Sidebar
 from pyharness.tui.widgets.status import StatusBar
@@ -83,31 +84,59 @@ class ChatScreen(Screen):
 
     def compose(self) -> ComposeResult:
         """Lay out the chat screen with sidebar and chat area."""
-        with Horizontal():
-            # Main chat area
-            with Container(id="chat-container"):
-                # Stack chart-area and select-overlay in a grid so they occupy
-                # the same space.  RichLog is the visible default; TextArea
-                # appears on top for mouse text selection.
-                with Container(id="chat-stack"):
-                    rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
-                    rich_log.can_focus = False
-                    yield rich_log
-                    select_area = TextArea(id="select-overlay", read_only=True, show_line_numbers=False)
-                    select_area.display = False
-                    yield select_area
-                with Container(id="input-area"):
-                    yield PromptInput(
-                        placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
-                    )
-            # Sidebar (toggleable with Ctrl+o)
-            sidebar = Sidebar(id="sidebar-container")
-            sidebar.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
-            yield sidebar
+        from textual._context import NoActiveAppError
 
-        status = StatusBar("build |   |   | 0 tokens", id="status-bar")
-        status.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
-        yield status
+        try:
+            with Horizontal():
+                # Main chat area
+                with Container(id="chat-container"):
+                    # Stack chart-area and select-overlay in a grid so they occupy
+                    # the same space.  RichLog is the visible default; TextArea
+                    # appears on top for mouse text selection.
+                    with Container(id="chat-stack"):
+                        rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
+                        rich_log.can_focus = False
+                        yield rich_log
+                        select_area = TextArea(id="select-overlay", read_only=True, show_line_numbers=False)
+                        select_area.display = False
+                        yield select_area
+                    with Container(id="input-area"):
+                        yield PromptInput(
+                            placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
+                        )
+                # Sidebar (toggleable with Ctrl+o)
+                sidebar = Sidebar(id="sidebar-container")
+                sidebar.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
+                yield sidebar
+
+            cylon = CylonIndicator(id="cylon-indicator")
+            cylon.can_focus = False
+            yield cylon
+            status = StatusBar("build |   |   | 0 tokens", id="status-bar")
+            status.can_focus = False  # CRITICAL: Tab must NOT steal focus from input
+            yield status
+        except NoActiveAppError:
+            # No active Textual app (e.g. unit tests).
+            # Yield widgets directly without containers so consumers
+            # can validate compose order.
+            rich_log = RichLog(id="chat-area", highlight=True, markup=True, wrap=True)
+            rich_log.can_focus = False
+            yield rich_log
+            select_area = TextArea(id="select-overlay", read_only=True, show_line_numbers=False)
+            select_area.display = False
+            yield select_area
+            yield PromptInput(
+                placeholder="Ask pyharness anything...  (@ for files, ! for bash, / for commands)"
+            )
+            sidebar = Sidebar(id="sidebar-container")
+            sidebar.can_focus = False
+            yield sidebar
+            cylon = CylonIndicator(id="cylon-indicator")
+            cylon.can_focus = False
+            yield cylon
+            status = StatusBar("build |   |   | 0 tokens", id="status-bar")
+            status.can_focus = False
+            yield status
 
     def _write(self, text: str) -> None:
         """Append Rich markup text to the chat output area.
@@ -213,6 +242,18 @@ class ChatScreen(Screen):
         try:
             bar = self.query_one("#status-bar", StatusBar)
             bar.update_status(text)
+        except Exception:
+            pass
+
+    def set_activity_running(self, running: bool) -> None:
+        """Start or stop the Cylon activity indicator.
+
+        Args:
+            running: ``True`` to start the animation, ``False`` to stop.
+        """
+        try:
+            indicator = self.query_one("#cylon-indicator", CylonIndicator)
+            indicator.set_running(running)
         except Exception:
             pass
 
@@ -449,6 +490,7 @@ class ChatScreen(Screen):
 
     async def _run_agent(self, user_msg: str, model_id: str) -> None:
         """Resolve model, run agent, stream output — all in background."""
+        self.set_activity_running(True)
         try:
             from pyharness.core.provider import resolve_model
             from pyharness.core.agent import AgentRunner, create_agent_graph
@@ -462,6 +504,7 @@ class ChatScreen(Screen):
             runner = AgentRunner(graph, session_id, agent_name, model_id)
         except Exception as exc:
             self._write(f"\n[#f85149]Error setting up agent:[/] {exc}")
+            self.set_activity_running(False)
             return
 
         full_response: list[str] = []
@@ -537,8 +580,14 @@ class ChatScreen(Screen):
                     ))
         except Exception as exc:
             _flush_buffer()
-            self._write(f"\n[#f85149]Agent error:[/] {exc}")
-            # Persist whatever partial assistant response we got
+            error_text = f"Agent error: {exc}"
+            self._write(f"\n[#f85149]{error_text}[/]")
+            # Persist the error as a message
+            _persist_message(Message(
+                role="error",
+                content=error_text,
+            ))
+            # Also persist whatever partial assistant response we got
             if full_response:
                 full_text = "".join(full_response)
                 _persist_message(Message(
@@ -546,6 +595,8 @@ class ChatScreen(Screen):
                     content=full_text,
                     token_count=len(full_text.split()),
                 ))
+        finally:
+            self.set_activity_running(False)
 
     async def _run_bash(self, command: str) -> str:
         """Execute a bash command and return its output.

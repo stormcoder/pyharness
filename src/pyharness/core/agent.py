@@ -30,6 +30,7 @@ from typing import Annotated, Any, TypedDict
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver  # noqa: TC001
+from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph  # noqa: TC001
 
@@ -188,6 +189,7 @@ class AgentRunner:
         agent_name: str,
         model_name: str,
         system_prompt: str | None = None,
+        recursion_limit: int = 50,
     ) -> None:
         from pyharness.core.system_prompt import DEFAULT_SYSTEM_PROMPT
 
@@ -195,11 +197,13 @@ class AgentRunner:
         self.session_id = session_id
         self.agent_name = agent_name
         self.model_name = model_name
+        self.recursion_limit = recursion_limit
         self.system_prompt: str = system_prompt or DEFAULT_SYSTEM_PROMPT.format(
             agent_name=agent_name, model_name=model_name
         )
         self.config: dict[str, Any] = {
-            "configurable": {"thread_id": session_id}
+            "configurable": {"thread_id": session_id},
+            "recursion_limit": self.recursion_limit,
         }
         self.child_sessions: list[str] = []  # IDs of child subagent sessions
 
@@ -244,39 +248,49 @@ class AgentRunner:
 
         cancelled = False
 
-        async for event in self.graph.astream_events(
-            initial_state, config=self.config, version="v2"
-        ):
-            # R2.6: check cancel event between iterations
-            if cancel_event is not None and cancel_event.is_set():
-                cancelled = True
-                break
+        try:
+            async for event in self.graph.astream_events(
+                initial_state, config=self.config, version="v2"
+            ):
+                # R2.6: check cancel event between iterations
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
 
-            kind = event["event"]
+                kind = event["event"]
 
-            if kind == "on_chat_model_stream":
-                content = event["data"]["chunk"].content
-                if content:
-                    yield {"type": "content", "data": content}
+                if kind == "on_chat_model_stream":
+                    content = event["data"]["chunk"].content
+                    if content:
+                        yield {"type": "content", "data": content}
 
-            elif kind == "on_tool_start":
-                yield {
-                    "type": "tool_call",
-                    "data": {
-                        "name": event["name"],
-                        "input": event["data"].get("input", {}),
-                    },
-                }
+                elif kind == "on_tool_start":
+                    yield {
+                        "type": "tool_call",
+                        "data": {
+                            "name": event["name"],
+                            "input": event["data"].get("input", {}),
+                        },
+                    }
 
-            elif kind == "on_tool_end":
-                output_raw = event["data"].get("output", "")
-                yield {
-                    "type": "tool_result",
-                    "data": {
-                        "name": event["name"],
-                        "output": str(output_raw)[:2000],
-                    },
-                }
+                elif kind == "on_tool_end":
+                    output_raw = event["data"].get("output", "")
+                    yield {
+                        "type": "tool_result",
+                        "data": {
+                            "name": event["name"],
+                            "output": str(output_raw)[:2000],
+                        },
+                    }
+        except GraphRecursionError:
+            yield {
+                "type": "error",
+                "data": (
+                    "Agent recursion limit reached. The task was too complex. "
+                    "Try breaking it into smaller steps."
+                ),
+            }
+            return
 
         if cancelled:
             yield {"type": "interrupted", "data": None}

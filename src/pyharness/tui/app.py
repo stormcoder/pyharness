@@ -143,12 +143,18 @@ class PyHarnessApp(App):
         display: none;
     }
 
-    #status-bar {
-        height: 1;
+    #footer {
         dock: bottom;
-        background: #161b22;
-        color: #8b949e;
-        padding: 0 2;
+        height: 1;
+    }
+
+    #cylon-indicator {
+        width: 22;
+        padding: 0 1;
+    }
+
+    #status-bar {
+        width: 1fr;
     }
 
     .user-message {
