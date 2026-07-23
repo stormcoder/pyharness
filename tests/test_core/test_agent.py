@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
 from pyharness.core.agent import AgentRunner, create_agent_graph
@@ -387,3 +387,196 @@ def test_subagent_inherits_parent_permissions() -> None:
     assert mw_no_parent.check("edit").action == "allow"
     assert mw_no_parent.check("bash").action == "allow"
     assert mw_no_parent.check("read").action == "allow"
+
+
+# ---------------------------------------------------------------------------
+# 10. System prompt — initial_state includes SystemMessage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_includes_system_message() -> None:
+    """AgentRunner initial_state MUST include a SystemMessage as the first
+    message (before the HumanMessage). The SystemMessage content should be
+    non-empty."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    captured_input: list = []
+
+    async def _fake_astream(input_data: dict, *args: object, **kwargs: object) -> AsyncIterator[dict]:
+        """Capture the input state and yield a fake stream event."""
+        captured_input.append(input_data)
+        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="ok")}}
+
+    with patch.object(graph, "astream_events", _fake_astream):
+        async for _ in runner.run("hello"):
+            pass
+
+    assert captured_input, "Expected astream_events to be called with initial_state"
+    messages: list = captured_input[0]["messages"]
+    # At least one message must be a SystemMessage
+    has_system = any(isinstance(m, SystemMessage) for m in messages)
+    assert has_system, (
+        "Initial state must include a SystemMessage, but none found. "
+        f"Messages: {[type(m).__name__ for m in messages]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_system_prompt_is_first_message() -> None:
+    """The FIRST message in initial_state must be a SystemMessage (not
+    HumanMessage)."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    captured_input: list = []
+
+    async def _fake_astream(input_data: dict, *args: object, **kwargs: object) -> AsyncIterator[dict]:
+        captured_input.append(input_data)
+        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="ok")}}
+
+    with patch.object(graph, "astream_events", _fake_astream):
+        async for _ in runner.run("hello"):
+            pass
+
+    assert captured_input
+    messages: list = captured_input[0]["messages"]
+    assert len(messages) >= 1, "Expected at least 1 message in initial_state"
+    first = messages[0]
+    assert isinstance(first, SystemMessage), (
+        f"First message must be SystemMessage, got {type(first).__name__}"
+    )
+
+
+def test_agent_runner_accepts_system_prompt() -> None:
+    """AgentRunner.__init__ must accept an optional ``system_prompt``
+    parameter. When provided it is stored; when None a sensible default
+    is used."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+
+    # With explicit system_prompt
+    runner_with = AgentRunner(
+        graph, "s1", "build", "test:fake",
+        system_prompt="You are the build agent for pyharness.",
+    )
+    assert runner_with.system_prompt == "You are the build agent for pyharness."
+
+    # Without explicit system_prompt — should have a default
+    runner_default = AgentRunner(graph, "s1", "build", "test:fake")
+    assert runner_default.system_prompt is not None
+    assert len(runner_default.system_prompt) > 0
+
+
+def test_default_system_prompt_not_empty() -> None:
+    """The default system prompt (when none is explicitly provided) must
+    be a non-empty string."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    prompt = runner.system_prompt
+    assert prompt, "Default system prompt must not be empty"
+    assert isinstance(prompt, str)
+    assert len(prompt.strip()) > 0
+
+
+def test_system_prompt_defines_agent_identity() -> None:
+    """The default system prompt must mention 'pyharness' and at least one
+    of 'coding assistant' or 'terminal coding agent'."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    prompt = runner.system_prompt.lower()
+    assert "pyharness" in prompt, (
+        "System prompt must mention 'pyharness' as the product identity"
+    )
+    has_role = "coding assistant" in prompt or "terminal coding agent" in prompt
+    assert has_role, (
+        "System prompt must define the agent's role as 'coding assistant' "
+        "or 'terminal coding agent'"
+    )
+
+
+def test_system_prompt_instructs_on_tool_usage() -> None:
+    """The system prompt must include guidance about when to use tools
+    vs. when to just respond conversationally."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    prompt = runner.system_prompt.lower()
+    # Should contain tool-related guidance keywords
+    has_tool_guidance = any(
+        word in prompt
+        for word in ("tool", "use tools", "when to")
+    )
+    assert has_tool_guidance, (
+        "System prompt must contain guidance about tool usage"
+    )
+
+
+def test_system_prompt_discourages_gratuitous_exploration() -> None:
+    """The prompt must include language discouraging unnecessary project
+    exploration — e.g. 'only use tools when explicitly asked' or 'don't
+    explore unless requested'."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    prompt = runner.system_prompt.lower()
+    discouraged = (
+        "only use tools" in prompt
+        or "don't explore" in prompt
+        or "do not explore" in prompt
+        or "unless asked" in prompt
+        or "unless requested" in prompt
+        or "only when asked" in prompt
+        or "only when explicitly" in prompt
+    )
+    assert discouraged, (
+        "System prompt must discourage gratuitous tool exploration for "
+        "trivial messages"
+    )
+
+
+@pytest.mark.asyncio
+async def test_initial_state_message_count() -> None:
+    """AgentRunner with default system prompt must have at least 2
+    messages in initial_state (system + user)."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    captured_input: list = []
+
+    async def _fake_astream(input_data: dict, *args: object, **kwargs: object) -> AsyncIterator[dict]:
+        captured_input.append(input_data)
+        yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="ok")}}
+
+    with patch.object(graph, "astream_events", _fake_astream):
+        async for _ in runner.run("hello"):
+            pass
+
+    assert captured_input
+    messages: list = captured_input[0]["messages"]
+    assert len(messages) >= 2, (
+        f"Expected at least 2 messages (system + user), got {len(messages)}"
+    )
+
+
+def test_agent_runner_initial_state_uses_agent_name() -> None:
+    """The system prompt should include the agent_name when available
+    (e.g. 'You are the build agent for pyharness...')."""
+    model = _make_mock_model(content="ok")
+    graph = create_agent_graph(model, [mock_read])
+    runner = AgentRunner(graph, "s1", "build", "test:fake")
+
+    prompt = runner.system_prompt.lower()
+    assert "build" in prompt, (
+        "System prompt should include the agent_name ('build')"
+    )

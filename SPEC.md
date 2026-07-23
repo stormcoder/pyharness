@@ -160,7 +160,7 @@ litellm was the original choice. **Replaced by LangChain chat models** because:
 | **TUI side panels** | Sessions, file tree, tools | + Memory tab | 4-panel sidebar |
 | **Image attachments** | Drag-drop, paste | Terminal image protocol | Kitty/iTerm2 |
 | **Editor mode** | /editor | Same | $EDITOR |
-| **Export** | /export Markdown | Same | Session export |
+| **Export** | /export Markdown | Same | Session export (OpenCode-style) |
 | **Share** | /share | /share | Optional |
 | **LSP** | Experimental | Experimental | python-lsp-server |
 | **🆕 Semantic memory** | ❌ | ✅ MemPalace | Cross-session recall |
@@ -780,6 +780,58 @@ LangGraph provides context management middleware. Pyharness adds:
 - Manual compaction via `/compact`
 - Pre-compaction MemPalace capture (index before summary loss)
 - Configurable `reserved` token buffer
+
+### 7.9 Session export (`/export`)
+
+`/export` writes a complete Markdown transcript of a session to a file.
+Every message (user, assistant, tool) is persisted to `SessionStore` during
+chat, so `/export` always produces a full record.
+
+| Behavior | Detail |
+|----------|--------|
+| **Command** | `/export` (current session) or `/export <session_id>` (specific session) |
+| **Output file** | `./pyharness_session_{session_id}.md` in the working directory |
+| **Format** | OpenCode-compatible: inline metadata, `## User` / `## Assistant` / `**Tool:**` blocks |
+| **Rich markup** | Stripped before writing (no `[bold]`, `[#hex]`, etc.) |
+
+**Format specification:**
+
+```markdown
+# Session Title
+
+**Session ID:** sess-xxx
+**Model:** anthropic:claude-sonnet-4-5
+**Agent:** build
+**Created:** 2026-07-22T12:00:00+00:00
+**Updated:** 2026-07-22T14:30:00+00:00
+**Messages:** 5
+**Total Tokens:** 1500
+
+---
+
+## Assistant
+
+This is the assistant's response content.
+May span multiple paragraphs.
+
+**Tool: read**
+**Input:**
+```json
+{"filePath": "/home/user/project/main.py"}
+```
+**Output:**
+```
+print("hello")
+```
+
+---
+
+## User
+
+What does this file do?
+```
+
+Tool messages are nested under the preceding assistant turn (no `---` separator before tool blocks). This preserves the natural turn structure: each user-assistant exchange is one logical unit, with tool invocations shown inline within the assistant's response.
 
 ### 7.6 Future: Parallel Multi-Agent Sessions
 

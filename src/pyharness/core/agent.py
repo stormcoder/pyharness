@@ -27,7 +27,7 @@ import operator
 from collections.abc import AsyncIterator
 from typing import Annotated, Any, TypedDict
 
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver  # noqa: TC001
 from langgraph.graph import END, StateGraph
@@ -187,11 +187,17 @@ class AgentRunner:
         session_id: str,
         agent_name: str,
         model_name: str,
+        system_prompt: str | None = None,
     ) -> None:
+        from pyharness.core.system_prompt import DEFAULT_SYSTEM_PROMPT
+
         self.graph = graph
         self.session_id = session_id
         self.agent_name = agent_name
         self.model_name = model_name
+        self.system_prompt: str = system_prompt or DEFAULT_SYSTEM_PROMPT.format(
+            agent_name=agent_name, model_name=model_name
+        )
         self.config: dict[str, Any] = {
             "configurable": {"thread_id": session_id}
         }
@@ -227,7 +233,10 @@ class AgentRunner:
             Streamed events (``type`` + ``data``).
         """
         initial_state: AgentState = {
-            "messages": [HumanMessage(content=user_message)],
+            "messages": [
+                SystemMessage(content=self.system_prompt),
+                HumanMessage(content=user_message),
+            ],
             "session_id": self.session_id,
             "agent_name": self.agent_name,
             "model_name": self.model_name,

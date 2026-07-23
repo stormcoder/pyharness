@@ -791,8 +791,8 @@ class PyHarnessApp(App):
             elif cmd == "/export":
                 try:
                     screen = self.screen
-                    # Chat output via screen._write()
-                    screen._write("[#8b949e]Session exported to markdown.[/]")
+                    if hasattr(screen, "_handle_export"):
+                        screen._handle_export()
                 except Exception:
                     pass
             else:

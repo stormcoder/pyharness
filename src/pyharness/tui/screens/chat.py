@@ -17,6 +17,7 @@ from textual.events import Key, MouseDown, MouseUp
 from textual.screen import Screen
 from textual.widgets import Input, RichLog, TextArea
 
+from pyharness.core.session import Message
 from pyharness.tui.widgets.input import PromptInput
 from pyharness.tui.widgets.sidebar import Sidebar
 from pyharness.tui.widgets.status import StatusBar
@@ -349,7 +350,7 @@ class ChatScreen(Screen):
                 elif cmd_name == "/editor":
                     self._handle_editor()
                 elif cmd_name == "/export":
-                    self._write("[#8b949e]Session exported to markdown.[/]")
+                    self._handle_export(cmd_parts[1] if len(cmd_parts) > 1 else None)
                 elif cmd_name == "/memory":
                     self._write("[#8b949e]🧠 Searching project memory... (MemPalace integration)[/]")
                 elif cmd_name == "/remember":
@@ -464,6 +465,7 @@ class ChatScreen(Screen):
             return
 
         full_response: list[str] = []
+        tool_calls: list[dict] = []  # track tool calls within this response
         stream_buffer: list[str] = []
         assistant_header_written: bool = False
         tool_block_active: bool = False
@@ -479,6 +481,19 @@ class ChatScreen(Screen):
             self._write("".join(stream_buffer))
             stream_buffer.clear()
 
+        # Helper to persist messages safely
+        def _persist_message(msg: Message) -> None:
+            """Persist a message to the session store, ignoring errors."""
+            try:
+                store = getattr(self.app, "_session_store", None)
+                if store is not None:
+                    store.add_message(session_id, msg)
+            except Exception:
+                pass
+
+        # PERSIST the user message first
+        _persist_message(Message(role="user", content=user_msg))
+
         try:
             async for ag_event in runner.run(user_msg):
                 kind = ag_event["type"]
@@ -492,6 +507,7 @@ class ChatScreen(Screen):
                         _flush_buffer()
                 elif kind == "tool_call":
                     _flush_buffer()  # flush any partial line before tool
+                    tool_calls.append(ag_event["data"])
                     name = ag_event["data"]["name"]
                     self._write(f"\n[#d29922]  🔧 {name}...[/]")
                     tool_block_active = True
@@ -500,13 +516,36 @@ class ChatScreen(Screen):
                     output = ag_event["data"].get("output", "")
                     if output:
                         self._write(f"[#8b949e]  {output}[/]")
+                    # PERSIST tool call + result
+                    tc = tool_calls[-1] if tool_calls else {"name": "unknown", "args": {}}
+                    _persist_message(Message(
+                        role="tool",
+                        tool_name=tc.get("name", "unknown"),
+                        tool_args=tc.get("args", {}),
+                        tool_result=output,
+                    ))
                 elif kind == "done":
                     _flush_buffer()  # flush final partial line
                     if tool_block_active:
                         tool_block_active = False
+                    # PERSIST the assistant message
+                    full_text = "".join(full_response)
+                    _persist_message(Message(
+                        role="assistant",
+                        content=full_text,
+                        token_count=len(full_text.split()),
+                    ))
         except Exception as exc:
             _flush_buffer()
             self._write(f"\n[#f85149]Agent error:[/] {exc}")
+            # Persist whatever partial assistant response we got
+            if full_response:
+                full_text = "".join(full_response)
+                _persist_message(Message(
+                    role="assistant",
+                    content=full_text,
+                    token_count=len(full_text.split()),
+                ))
 
     async def _run_bash(self, command: str) -> str:
         """Execute a bash command and return its output.
@@ -616,7 +655,7 @@ class ChatScreen(Screen):
             self._handle_editor()
 
         elif cmd_name == "/export":
-            self._write("[#7ee787]Session exported to markdown.[/]")
+            self._handle_export(cmd_parts[1] if len(cmd_parts) > 1 else None)
 
         elif cmd_name == "/sessions":
             self._write("[#7ee787]Opening session browser...[/]")
@@ -694,6 +733,35 @@ class ChatScreen(Screen):
             agents_md.write_text(template)
             self._write(f"[#7ee787]Created AGENTS.md at {agents_md}[/]")
             self.update_status(f"{self.app.current_agent} | AGENTS.md created | 0 tokens")
+
+    def _handle_export(self, session_id: str | None = None) -> None:
+        """Export current session (or specific session by ID) to a Markdown file.
+
+        Args:
+            session_id: Optional session ID. If ``None``, uses the current session.
+        """
+        sid = session_id if session_id is not None else getattr(
+            self.app, "_current_session_id", None
+        )
+        if not sid:
+            self._write("[#f85149]No active session to export.[/]")
+            return
+        try:
+            store = getattr(self.app, "_session_store", None)
+            if store is None:
+                self._write("[#f85149]Session store not available.[/]")
+                return
+            session = store.get_session(sid)
+            if session is None:
+                self._write(f"[#f85149]Session '{sid}' not found.[/]")
+                return
+            from pyharness.core.session_export import export_session_to_markdown
+
+            output_path = export_session_to_markdown(session)
+            self._write(f"[#7ee787]Session exported to {output_path}[/]")
+            self.notify(f"[#7ee787]Exported to {output_path.name}[/]", timeout=3)
+        except Exception as e:
+            self._write(f"[#f85149]Export failed: {e}[/]")
 
     def _handle_models_command(self) -> None:
         """Centralized handler for /models — shows interactive dropdown.
