@@ -1345,7 +1345,7 @@ class StatusBar(Static):
 - ! bash command injection
 - Git-backed undo/redo middleware
 - Side panels (Sessions, File Tree, Tools tabs)
-- **Session browser**: list, switch, resume, archive sessions
+- **Session browser**: list, switch, resume, archive, rename, delete sessions
 - Command palette (Ctrl+p)
 - Slash commands system
 - MemPalace Memory tab in sidebar

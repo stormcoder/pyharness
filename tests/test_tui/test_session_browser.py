@@ -60,6 +60,8 @@ class FakeSessionStore:
 
     def __init__(self) -> None:
         self._sessions: dict[str, FakeSession] = {}
+        self._update_session_called: bool = False
+        self._last_updated_session: FakeSession | None = None
 
     def create_session(self, session: FakeSession) -> FakeSession:
         self._sessions[session.id] = session
@@ -85,6 +87,24 @@ class FakeSessionStore:
         s = self._sessions.get(session_id)
         if s:
             s.status = "archived"
+
+    def update_session(self, session: FakeSession) -> None:
+        """Update session metadata in the store (same signature as SessionStore)."""
+        from datetime import datetime, timezone
+
+        self._update_session_called = True
+        self._last_updated_session = session
+        existing = self._sessions.get(session.id)
+        if existing is not None:
+            existing.title = session.title
+            existing.project = session.project
+            existing.model = session.model
+            existing.agent = session.agent
+            existing.status = session.status
+            existing.total_tokens = session.total_tokens
+            existing.updated_at = datetime.now(timezone.utc).isoformat()
+            if session.metadata is not None:
+                existing.metadata = dict(session.metadata)
 
 
 # =============================================================================
@@ -939,4 +959,277 @@ class TestLastSessionWarningMessages:
         assert session is not None, "Last session must not be deleted"
         assert session.status == "active", (
             f"Last session must remain active. Got: {session.status!r}"
+        )
+
+
+# =============================================================================
+# TDD: Session Rename (r keybinding) — ALL TESTS MUST FAIL
+# =============================================================================
+
+
+class TestSessionRenameBinding:
+    """SessionBrowser must have an 'r' keybinding for rename."""
+
+    def test_rename_binding_exists(self) -> None:
+        """SessionBrowser BINDINGS must include a binding for rename
+        (e.g., ``("r", "rename", "Rename")``)."""
+        store = FakeSessionStore()
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        bindings_map: dict[str, str] = {b[0]: b[1] for b in browser.BINDINGS}
+
+        assert "r" in bindings_map, (
+            "BINDINGS must include 'r' key for rename. "
+            f"Current bindings: {list(bindings_map)}"
+        )
+        # The action must be named appropriately
+        assert bindings_map.get("r") in (
+            "rename", "action_rename", "rename_session",
+        ), (
+            f"'r' binding must map to a rename action. "
+            f"Got '{bindings_map.get('r')}'"
+        )
+
+    def test_rename_action_exists(self) -> None:
+        """SessionBrowser must have an ``action_rename()`` method."""
+        store = FakeSessionStore()
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        assert hasattr(browser, "action_rename"), (
+            "SessionBrowser must have an action_rename() method for rename"
+        )
+
+
+class TestSessionRenameUnit:
+    """Unit-level rename tests that don't require the full Textual runtime."""
+
+    def test_rename_empty_title_rejected(self) -> None:
+        """Attempting to rename to an empty string must be rejected
+        (notify with warning severity)."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(2)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        # Set up the sessions so there's a selected session
+        browser._sessions = sessions  # type: ignore[assignment]
+
+        # Monkey-patch notify to capture calls
+        captured: list[tuple[str, str]] = []
+        _orig_notify = browser.notify
+
+        def _capture(message: str, severity: str = "information",
+                     timeout: float | None = None) -> None:
+            captured.append((message, severity))
+            _orig_notify(message, severity=severity, timeout=timeout)
+
+        browser.notify = _capture  # type: ignore[assignment]
+
+        # Simulate rename with empty title
+        sid = sessions[0].id
+        # The rename method should accept (session_id, new_title) or
+        # call a helper that validates
+        if hasattr(browser, "_do_rename"):
+            browser._do_rename(sid, "")  # type: ignore[attr-defined]
+        elif hasattr(browser, "action_rename"):
+            # Set the list index, then call action_rename
+            # (action_rename would normally launch an Input modal)
+            # We need to simulate the input — call with empty string
+            try:
+                browser.action_rename(new_title="")  # type: ignore[attr-defined]
+            except TypeError:
+                # action_rename takes no args — need _do_rename helper
+                pass
+
+        # At minimum, the browser must have a mechanism to validate title
+        assert hasattr(browser, "_do_rename") or any(
+            "empty" in str(m).lower() or "title" in str(m).lower()
+            for m, _ in captured
+        ), (
+            "SessionBrowser must have _do_rename helper or reject empty titles. "
+            f"Captured notifications: {captured}"
+        )
+
+        # Verify the session title was NOT changed
+        session = store.get_session(sid)
+        assert session is not None
+        assert session.title != "", (
+            "Empty title must be rejected — session title must not become empty"
+        )
+
+    def test_rename_trims_whitespace(self) -> None:
+        """``  My Session  `` → stored as ``My Session`` (whitespace trimmed)."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(1)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        browser._sessions = sessions  # type: ignore[assignment]
+
+        sid = sessions[0].id
+        raw_title = "  My Session  "
+
+        assert hasattr(browser, "_do_rename"), (
+            "SessionBrowser must have a _do_rename(session_id, new_title) helper "
+            "that handles title validation, trimming, and persistence"
+        )
+
+        browser._do_rename(sid, raw_title)  # type: ignore[attr-defined]
+
+        session = store.get_session(sid)
+        assert session is not None
+        assert session.title == "My Session", (
+            f"Title must be trimmed. Got: {session.title!r}"
+        )
+
+    def test_rename_preserves_unchanged_fields(self) -> None:
+        """After rename, other fields (model, agent, token count) must be
+        unchanged."""
+        store = FakeSessionStore()
+        session = FakeSession(
+            id="sess-rename-01",
+            title="Original Title",
+            model="openai:gpt-4o",
+            agent="explore",
+            total_tokens=4200,
+            status="active",
+        )
+        store.create_session(session)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        browser._sessions = [session]  # type: ignore[assignment]
+
+        assert hasattr(browser, "_do_rename"), (
+            "SessionBrowser must have a _do_rename(session_id, new_title) helper"
+        )
+
+        browser._do_rename(session.id, "New Title")  # type: ignore[attr-defined]
+
+        loaded = store.get_session(session.id)
+        assert loaded is not None
+        assert loaded.title == "New Title", (
+            f"Title must be updated. Got: {loaded.title!r}"
+        )
+        assert loaded.model == "openai:gpt-4o", (
+            f"Model must be unchanged. Got: {loaded.model!r}"
+        )
+        assert loaded.agent == "explore", (
+            f"Agent must be unchanged. Got: {loaded.agent!r}"
+        )
+        assert loaded.total_tokens == 4200, (
+            f"Token count must be unchanged. Got: {loaded.total_tokens}"
+        )
+        assert loaded.status == "active", (
+            f"Status must be unchanged. Got: {loaded.status!r}"
+        )
+
+
+class TestSessionRenameIntegration:
+    """Integration tests for rename that exercise the Textual pilot."""
+
+    async def test_rename_updates_session_title(self) -> None:
+        """Call ``action_rename()`` with a selected session → session title
+        is changed in the store."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(2)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+
+            assert hasattr(screen, "_do_rename"), (
+                "SessionBrowser must have _do_rename for rename implementation"
+            )
+
+            # Simulate the rename: set the new title on the session
+            sid = screen._sessions[0].id
+            screen._do_rename(sid, "Renamed Session")  # type: ignore[attr-defined]
+
+            # Verify the session title was updated in the store
+            updated = store.get_session(sid)
+            assert updated is not None
+            assert updated.title == "Renamed Session", (
+                f"Session title must be 'Renamed Session'. Got: {updated.title!r}"
+            )
+
+    async def test_rename_refreshes_list(self) -> None:
+        """After rename, ``_refresh_list()`` must be called so the updated
+        title appears in the ListView."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(2)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+
+            assert hasattr(screen, "_do_rename"), (
+                "SessionBrowser must have _do_rename for rename implementation"
+            )
+
+            sid = screen._sessions[0].id
+            new_title = "Z Refreshed Title"
+
+            # Apply rename
+            screen._do_rename(sid, new_title)  # type: ignore[attr-defined]
+
+            # After rename, the list must have been refreshed
+            # — the new title must appear in the list items
+            texts = _extract_list_item_texts(pilot)
+            matching = [t for t in texts if new_title in t]
+            assert matching, (
+                f"Refreshed title '{new_title}' must appear in list items. "
+                f"Got: {texts}"
+            )
+
+    async def test_rename_updates_tab_bar(self) -> None:
+        """If a session tab exists for the renamed session, the tab title
+        must be updated via the tab bar's ``update_title()``."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(1)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+
+        # Monkey-patch a tab bar reference onto the browser
+        tab_bar_updates: list[tuple[str, str]] = []
+
+        class _MockTabBar:
+            def update_title(self, session_id: str, title: str) -> None:
+                tab_bar_updates.append((session_id, title))
+
+        mock_tab_bar = _MockTabBar()
+        browser.tab_bar = mock_tab_bar  # type: ignore[attr-defined]
+
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+
+            assert hasattr(screen, "_do_rename"), (
+                "SessionBrowser must have _do_rename for rename implementation"
+            )
+
+            sid = screen._sessions[0].id
+            screen._do_rename(sid, "Tabbed Session")  # type: ignore[attr-defined]
+
+        # Verify tab bar was notified
+        assert len(tab_bar_updates) >= 1, (
+            "Tab bar update_title() must be called after rename. "
+            f"Updates: {tab_bar_updates}"
+        )
+        assert tab_bar_updates[0] == (sid, "Tabbed Session"), (
+            f"Tab bar must receive (session_id, new_title). "
+            f"Got: {tab_bar_updates[0]}"
         )

@@ -6,12 +6,13 @@ resume, new, archive, delete) from ``docs/specs/parallel-multi-agent.md``.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
-from textual.containers import Container
-from textual.screen import Screen
-from textual.widgets import Button, ListItem, ListView, Static
+from textual.containers import Container, Vertical
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Button, Input, ListItem, ListView, Static
 
 from pyharness.core.session import Session
 
@@ -92,6 +93,7 @@ class SessionBrowser(Screen[object]):
     BINDINGS = [
         ("escape", "dismiss", "Close"),
         ("enter", "resume", "Resume"),
+        ("r", "rename", "Rename"),
         ("n", "new_session", "New"),
         ("a", "archive", "Archive"),
         ("d", "delete_session", "Delete"),
@@ -124,7 +126,7 @@ class SessionBrowser(Screen[object]):
             yield Static("[bold #58a6ff]Sessions[/]", id="sb-title")
             yield Static(
                 "[#8b949e]Active sessions will appear here. "
-                "\u2328 Resume \u00b7 n New \u00b7 a Archive \u00b7 d Delete[/]",
+                "\u2328 Resume \u00b7 n New \u00b7 a Archive \u00b7 d Delete \u00b7 r Rename[/]",
                 id="sb-status",
             )
             yield ListView(id="sb-list")
@@ -191,6 +193,76 @@ class SessionBrowser(Screen[object]):
             f"Archived session {_truncate_id(session_id)}",
         )
         self._refresh_list()
+
+    def action_rename(self) -> None:
+        """Rename the selected session."""
+        session_id = self._selected_session_id()
+        if session_id is None:
+            self.notify("No session selected", severity="warning")
+            return
+
+        class RenameModal(ModalScreen[str | None]):
+            def compose(self) -> ComposeResult:
+                with Vertical(id="rename-dialog"):
+                    yield Static("Rename Session", id="rename-title")
+                    yield Input(
+                        placeholder="Enter new session name...",
+                        id="rename-input",
+                    )
+                    with Container(id="rename-actions"):
+                        yield Button("Rename", variant="primary", id="rename-btn")
+                        yield Button("Cancel", id="cancel-btn")
+
+            def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "rename-btn":
+                    inp = self.query_one("#rename-input", Input)
+                    self.dismiss(inp.value)
+                else:
+                    self.dismiss(None)
+
+        self.app.push_screen(
+            RenameModal(),
+            callback=lambda new_title: self._do_rename(session_id, new_title),
+        )
+
+    def _do_rename(self, session_id: str, new_title: str | None) -> None:
+        """Validate and persist a session rename."""
+        if new_title is None:
+            return  # cancelled
+        new_title = new_title.strip()
+        if not new_title:
+            with contextlib.suppress(Exception):
+                self.notify("Session name cannot be empty", severity="warning")
+            return
+
+        store = self._resolve_store()
+        if store is None:
+            with contextlib.suppress(Exception):
+                self.notify("Session store not available", severity="error")
+            return
+
+        try:
+            session = store.get_session(session_id)
+            if session is None:
+                with contextlib.suppress(Exception):
+                    self.notify("Session not found", severity="error")
+                return
+            session.title = new_title
+            store.update_session(session)
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                self.notify(f"Rename failed: {exc}", severity="error")
+            return
+
+        # Update tab bar if available
+        if hasattr(self, "tab_bar") and self.tab_bar is not None:
+            with contextlib.suppress(Exception):
+                self.tab_bar.update_title(session_id, new_title)
+
+        with contextlib.suppress(Exception):
+            self.notify(f"Renamed to '{new_title}'")
+        with contextlib.suppress(Exception):
+            self._refresh_list()
 
     def _action_bulk_archive(self) -> None:
         """Archive all multi-selected sessions."""
@@ -397,19 +469,45 @@ class SessionBrowser(Screen[object]):
         list_view: ListView = self.query_one("#sb-list", ListView)
         list_view.clear()
 
+        # Get existing ListItem children (may have lingered from prior refresh)
+        existing_items = [
+            c for c in list_view.children if isinstance(c, ListItem)
+        ]
+
         if not sessions:
+            # Remove lingering items and show empty state
+            for item in existing_items:
+                item._detach()
             self._show_empty("No saved sessions yet")
             return
 
-        for s in self._sessions:
+        # Remove lingering items that exceed the new count
+        new_count = len(self._sessions)
+        for i in range(new_count, len(existing_items)):
+            existing_items[i]._detach()
+
+        for i, s in enumerate(self._sessions):
             raw = _format_session_label(s)
             # Highlight selected sessions
             if s.id in self._selected_sessions:
                 raw = f"[#d29922 on #3d2e00] {raw} [/]"
-            list_view.append(ListItem(Static(raw)))
+
+            if i < len(existing_items):
+                # Update existing ListItem in-place
+                statics = [
+                    c for c in existing_items[i].children if isinstance(c, Static)
+                ]
+                if statics:
+                    statics[0].update(raw)
+            else:
+                # Append new ListItem for additional sessions
+                list_view.append(ListItem(Static(raw)))
 
     def _show_empty(self, message: str) -> None:
         """Display an empty-state message in the list view."""
         list_view: ListView = self.query_one("#sb-list", ListView)
         list_view.clear()
+        for child in list(list_view.children):
+            if isinstance(child, ListItem):
+                child._detach()
         list_view.append(ListItem(Static(f"[#8b949e]{message}[/]")))

@@ -313,3 +313,73 @@ class TestHardDelete:
             pytest.fail(
                 f"hard_delete() on nonexistent session must not raise: {exc}"
             )
+
+
+# ===========================================================================
+# TDD: Session Rename — core SessionStore.update_session() tests
+# ===========================================================================
+
+
+class TestUpdateSessionTitleOnly:
+    """SessionStore.update_session() must support title-only updates."""
+
+    def test_update_session_title_only(self, store: SessionStore) -> None:
+        """``store.update_session()`` with only title changed should update
+        title but preserve other fields (model, agent, token count, project)."""
+        s = _make_session(
+            title="Original Title",
+            model="openai:gpt-4o",
+            agent="plan",
+            project="my-project",
+        )
+        store.create_session(s)
+
+        # Modify only title
+        s.title = "New Renamed Title"
+        store.update_session(s)
+
+        loaded = store.get_session(s.id)
+        assert loaded is not None
+        assert loaded.title == "New Renamed Title", (
+            f"Title must be 'New Renamed Title'. Got: {loaded.title!r}"
+        )
+        # Other fields must be preserved
+        assert loaded.model == "openai:gpt-4o", (
+            f"Model must be preserved. Got: {loaded.model!r}"
+        )
+        assert loaded.agent == "plan", (
+            f"Agent must be preserved. Got: {loaded.agent!r}"
+        )
+        assert loaded.project == "my-project", (
+            f"Project must be preserved. Got: {loaded.project!r}"
+        )
+
+    def test_session_store_update_session_returns_none_on_success(
+        self, store: SessionStore
+    ) -> None:
+        """Verify ``store.update_session()`` does not crash on valid input
+        and returns None (or a non-error sentinel)."""
+        s = _make_session(title="Will Rename")
+        store.create_session(s)
+
+        s.title = "Renamed Successfully"
+
+        # Must not raise
+        try:
+            result = store.update_session(s)
+        except Exception as exc:
+            pytest.fail(
+                f"update_session() must not raise on valid input: {exc}"
+            )
+
+        # update_session is documented as returning None
+        assert result is None, (
+            f"update_session() must return None. Got: {result!r}"
+        )
+
+        # Verify the change actually persisted
+        loaded = store.get_session(s.id)
+        assert loaded is not None
+        assert loaded.title == "Renamed Successfully", (
+            f"Title must be persisted to DB. Got: {loaded.title!r}"
+        )
