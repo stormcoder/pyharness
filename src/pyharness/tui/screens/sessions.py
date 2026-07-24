@@ -90,6 +90,12 @@ class SessionBrowser(Screen[object]):
       - ``None`` — cancelled (Escape)
     """
 
+    CSS = """
+    #sb-list > Widget.selected {
+        background: #1f3a5c;
+    }
+    """
+
     BINDINGS = [
         ("escape", "dismiss", "Close"),
         ("enter", "resume", "Resume"),
@@ -467,47 +473,31 @@ class SessionBrowser(Screen[object]):
             self._sessions.sort(key=lambda s: s.updated_at or "")
 
         list_view: ListView = self.query_one("#sb-list", ListView)
-        list_view.clear()
 
-        # Get existing ListItem children (may have lingered from prior refresh)
-        existing_items = [
-            c for c in list_view.children if isinstance(c, ListItem)
-        ]
-
-        if not sessions:
-            # Remove lingering items and show empty state
-            for item in existing_items:
-                item._detach()
+        if not self._sessions:
             self._show_empty("No saved sessions yet")
             return
 
-        # Remove lingering items that exceed the new count
-        new_count = len(self._sessions)
-        for i in range(new_count, len(existing_items)):
-            existing_items[i]._detach()
-
-        for i, s in enumerate(self._sessions):
+        # Build all items first, then atomically replace children.
+        new_items: list[ListItem] = []
+        for s in self._sessions:
             raw = _format_session_label(s)
-            # Highlight selected sessions
+            list_item = ListItem(Static(raw))
             if s.id in self._selected_sessions:
-                raw = f"[#d29922 on #3d2e00] {raw} [/]"
+                list_item.add_class("selected")
+            new_items.append(list_item)
 
-            if i < len(existing_items):
-                # Update existing ListItem in-place
-                statics = [
-                    c for c in existing_items[i].children if isinstance(c, Static)
-                ]
-                if statics:
-                    statics[0].update(raw)
-            else:
-                # Append new ListItem for additional sessions
-                list_view.append(ListItem(Static(raw)))
+        # Remove all existing children synchronously.
+        for child in list(list_view.children):
+            list_view._nodes._remove(child)
+
+        # Mount the fresh batch.
+        for item in new_items:
+            list_view.append(item)
 
     def _show_empty(self, message: str) -> None:
         """Display an empty-state message in the list view."""
         list_view: ListView = self.query_one("#sb-list", ListView)
-        list_view.clear()
         for child in list(list_view.children):
-            if isinstance(child, ListItem):
-                child._detach()
+            list_view._nodes._remove(child)
         list_view.append(ListItem(Static(f"[#8b949e]{message}[/]")))

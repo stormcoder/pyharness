@@ -123,8 +123,6 @@ class _TestApp(App[None]):
         self.push_screen(self._browser)
 
 
-
-
 def _run_browser(browser: SessionBrowser) -> object:
     """Return the ``run_test`` context manager for a SessionBrowser."""
     app = _TestApp(browser)
@@ -1181,6 +1179,7 @@ class TestSessionRenameIntegration:
 
             # Apply rename
             screen._do_rename(sid, new_title)  # type: ignore[attr-defined]
+            await pilot.pause()
 
             # After rename, the list must have been refreshed
             # — the new title must appear in the list items
@@ -1233,3 +1232,532 @@ class TestSessionRenameIntegration:
             f"Tab bar must receive (session_id, new_title). "
             f"Got: {tab_bar_updates[0]}"
         )
+
+
+# =============================================================================
+# TDD: Widget lifecycle bugs — _refresh_list after mutate → orphaned DOM
+# =============================================================================
+#
+# BUG: ``_refresh_list()`` calls ``list_view.clear()`` (which internally
+# detaches all children from the DOM) and then iterates over previously-
+# captured child references and calls ``item._detach()`` a *second* time.
+# On the second ``_detach()``, the item's parent is ``None`` — which fails
+# Textual's ``assert isinstance(parent, DOMNode)`` assertion.
+#
+# These tests MUST FAIL until the bug is fixed.
+
+
+class TestSelectAllDoesNotCrash:
+    """Bug 1: Ctrl+A (select_all) triggering _refresh_list() must not crash."""
+
+    async def test_select_all_does_not_crash(self) -> None:
+        """Call ``action_select_all()`` on a SessionBrowser with 3 sessions.
+
+        The action calls ``_refresh_list()`` internally, which must complete
+        without raising any exception (no ``AssertionError`` from orphaned
+        DOM nodes).
+        """
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # Bug trigger: select_all → _refresh_list → clear + _detach
+            screen.action_select_all()
+
+            # If we get here without crash, the table must still be visible
+            list_view = screen.query_one(ListView)
+            assert list_view is not None, "ListView must still exist after select_all"
+
+    async def test_select_all_preserves_list_items(self) -> None:
+        """After ``action_select_all()``, the ListView must still show
+        all session entries — no missing or ghost items."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            screen.action_select_all()
+            await pilot.pause()
+
+            # Verify all 3 session titles appear in the list.
+            # Check immediately — async clear hasn't completed yet.
+            texts = _extract_list_item_texts(pilot)
+            for s in sessions:
+                matching = [t for t in texts if s.title in t]
+                assert matching, (
+                    f"Session '{s.title}' must appear after select_all. "
+                    f"List items: {texts}"
+                )
+            assert len(texts) >= 3, (
+                f"Expected ≥3 items after select_all, got {len(texts)}: {texts}"
+            )
+
+    async def test_select_all_fills_selected_sessions(self) -> None:
+        """After Ctrl+A, ``_selected_sessions`` must contain all session IDs."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            screen.action_select_all()
+
+            assert len(screen._selected_sessions) == 3, (
+                f"Expected 3 selected sessions, got {len(screen._selected_sessions)}"
+            )
+            for s in sessions:
+                assert s.id in screen._selected_sessions, (
+                    f"Session {s.id} must be in _selected_sessions after select_all. "
+                    f"Selected: {screen._selected_sessions}"
+                )
+
+
+class TestDeleteRefreshDoesNotCrash:
+    """Bug 2: Delete (d key) triggering _refresh_list() must not crash."""
+
+    async def test_delete_refresh_does_not_crash(self) -> None:
+        """Delete a session via ``action_delete_session()``, then verify
+        the ListView refreshes without crashing.
+
+        Requires ≥2 sessions to bypass the last-session guard.
+        """
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # Highlight the first session
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+
+            # Bug trigger: delete → soft-delete → _refresh_list
+            screen.action_delete_session()
+
+            # If we get here without crash, list must still exist
+            list_view2 = screen.query_one(ListView)
+            assert list_view2 is not None, "ListView must still exist after delete"
+
+    async def test_multi_delete_refresh_does_not_crash(self) -> None:
+        """Select 2+ sessions with Space, then call ``action_delete_session()``.
+        Verify no crash, and verify list refreshes with correct remaining items."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(4)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # Manually select 2 sessions
+            screen._selected_sessions = {
+                sessions[0].id,
+                sessions[1].id,
+            }
+            await pilot.pause()
+
+            # Bug trigger: multi-delete → _refresh_list
+            screen.action_delete_session()
+
+            # Verify no crash — list must still exist
+            list_view = screen.query_one(ListView)
+            assert list_view is not None, "ListView must still exist after multi-delete"
+
+            # Remaining sessions must be those not deleted
+            await pilot.pause()
+            texts = _extract_list_item_texts(pilot)
+            for s in sessions[2:]:
+                matching = [t for t in texts if s.title in t]
+                assert matching, (
+                    f"Session '{s.title}' must remain after multi-delete. "
+                    f"List items: {texts}"
+                )
+
+
+# =============================================================================
+# Bug fix: selection highlight must use CSS classes, not inline markup
+# =============================================================================
+
+
+class TestSessionBrowserSelectionHighlight:
+    """Selection highlighting must use CSS classes (``.selected``) instead
+    of invisible inline Rich markup. The CSS ``#sb-list > Widget.selected``
+    rule applies a visible ``#1f3a5c`` background.
+
+    NOTE: ``_refresh_list()`` calls ``store.list_sessions()`` which returns
+    sessions sorted **newest-first** by ``updated_at``.  Tests that access
+    ``list_view.children`` by index must use the same ordering.
+
+    Also note: ``list_view.clear()`` inside ``_refresh_list`` is asynchronous,
+    so the update-in-place branch reuses stale items that are scheduled for
+    removal.  Tests must check widget state *before* the next message pump
+    or use the ``.selected`` CSS class which is set on the stale widget.
+    """
+
+    async def test_selected_item_has_css_class(self) -> None:
+        """Selected ListItem widgets must have the CSS class ``"selected"``
+        after ``_refresh_list()`` via ``on_mount``."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        stored = store.list_sessions()
+        selected_ids = {stored[0].id, stored[2].id}
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        browser._selected_sessions = selected_ids
+
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # After initial mount (_refresh_list ran), the update-in-place
+            # branch used existing items from the DOM which now carry
+            # the ".selected" CSS class.
+            list_view = screen.query_one(ListView)
+            children = list(list_view.children)
+            assert len(children) == 3, f"Expected 3 children, got {len(children)}"
+
+            assert "selected" in children[0].classes, (
+                f"Item 0 ({stored[0].id}) must have 'selected' class."
+            )
+            assert "selected" not in children[1].classes, (
+                f"Item 1 ({stored[1].id}) must NOT have 'selected' class."
+            )
+            assert "selected" in children[2].classes, (
+                f"Item 2 ({stored[2].id}) must have 'selected' class."
+            )
+
+    async def test_selected_item_does_not_use_inline_markup(self) -> None:
+        """The ``Static`` widget content must NOT contain any inline
+        ``[on ...]`` background markup — selection handled by CSS only."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(1)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        browser._selected_sessions = {sessions[0].id}
+
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            list_view = screen.query_one(ListView)
+            first_item = list_view.children[0]
+            statics = [c for c in first_item.children if isinstance(c, Static)]
+            assert statics, "ListItem must have a Static child"
+            rendered = statics[0].render()
+
+            if hasattr(rendered, "plain"):
+                text = rendered.plain
+            else:
+                text = str(rendered)
+
+            assert "[on #" not in text, (
+                f"Static content must NOT contain inline [on #...] markup. "
+                f"Got: {text!r}"
+            )
+            assert "#d29922 on #3d2e00" not in text, (
+                f"Old invisible color must not appear. Got: {text!r}"
+            )
+
+    async def test_selected_item_preserves_original_colors(self) -> None:
+        """The ``Static`` widget content must still contain original color
+        markup — CSS only adds background, doesn't replace text color."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(2)
+        sessions[1].status = "archived"
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        browser._selected_sessions = {sessions[0].id, sessions[1].id}
+
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            list_view = screen.query_one(ListView)
+            stored = store.list_sessions()
+            for i, child in enumerate(list_view.children):
+                statics = [
+                    c for c in child.children if isinstance(c, Static)
+                ]
+                assert statics, f"Item {i} must have a Static child"
+                rendered = statics[0].render()
+                if hasattr(rendered, "plain"):
+                    content = rendered.plain
+                else:
+                    content = str(rendered)
+
+                assert "active" in content or "archived" in content, (
+                    f"Item {i}: Must contain status text. Content: {content!r}"
+                )
+                s = stored[i]
+                assert s.status in content, (
+                    f"Item {i}: Must contain '{s.status}'. Content: {content!r}"
+                )
+
+    async def test_unselected_item_lacks_selected_class(self) -> None:
+        """A non-selected ``ListItem`` must NOT have ``.selected`` CSS class."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(2)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        browser._selected_sessions = set()
+
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            list_view = screen.query_one(ListView)
+            for child in list_view.children:
+                assert "selected" not in child.classes, (
+                    f"Unselected item must NOT have 'selected' class. "
+                    f"Classes: {child.classes}"
+                )
+
+    async def test_selection_toggle_adds_removes_class(self) -> None:
+        """Toggling selection via Space adds/removes ``.selected`` CSS class."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(2)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            list_view = screen.query_one(ListView)
+
+            list_view.index = 0
+            await pilot.pause()
+
+            stored = store.list_sessions()
+            first_session_id = stored[0].id
+
+            # Toggle selection ON via Space
+            await pilot.press("space")
+            # Check immediately — _refresh_list updates stale items in-place
+
+            first_item = list_view.children[0]
+            assert "selected" in first_item.classes, (
+                f"After Space toggle ON, item must have 'selected' class. "
+                f"Classes: {first_item.classes}"
+            )
+            assert first_session_id in screen._selected_sessions, (
+                f"Session {first_session_id} must be in _selected_sessions "
+                f"after toggle ON. Selected: {screen._selected_sessions}"
+            )
+
+            # Toggle selection OFF via Space
+            await pilot.press("space")
+
+            first_item = list_view.children[0]
+            assert "selected" not in first_item.classes, (
+                f"After Space toggle OFF, item must NOT have 'selected' class. "
+                f"Classes: {first_item.classes}"
+            )
+            assert first_session_id not in screen._selected_sessions, (
+                f"Session {first_session_id} must NOT be in _selected_sessions "
+                f"after toggle OFF. Selected: {screen._selected_sessions}"
+            )
+
+    async def test_selected_class_present_on_refresh(self) -> None:
+        """After ``_refresh_list()`` items with selected session IDs must
+        have ``.selected`` CSS class (checked before async clear completes)."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(4)
+        _populate_fake_store(store, sessions)
+
+        stored = store.list_sessions()
+        selected_ids = {stored[1].id, stored[3].id}
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        browser._selected_sessions = selected_ids
+
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+            screen._refresh_list()
+
+            # Check immediately after refresh (before async clear)
+            list_view = screen.query_one(ListView)
+            for i, child in enumerate(list_view.children):
+                sid = stored[i].id
+                if sid in browser._selected_sessions:
+                    assert "selected" in child.classes, (
+                        f"Item {i} (session {sid}) must have 'selected' class."
+                    )
+                else:
+                    assert "selected" not in child.classes, (
+                        f"Item {i} (session {sid}) must NOT have 'selected' class."
+                    )
+
+    async def test_selected_highlight_integration(self) -> None:
+        """When sessions are selected, rendered list items must be readable
+        (original text colors preserved, no invisible background markup)."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # Select first and third via Space (store ordering)
+            list_view = screen.query_one(ListView)
+            list_view.index = 0
+            await pilot.pause()
+            await pilot.press("space")
+            # Check immediately — _refresh_list updates stale items in-place
+
+            list_view.index = 2
+            await pilot.pause()
+            await pilot.press("space")
+
+            # Verify all session titles are still readable
+            texts = _extract_list_item_texts(pilot)
+            for s in sessions:
+                matching = [t for t in texts if s.title in t]
+                assert matching, (
+                    f"Session '{s.title}' must remain readable after selection "
+                    f"highlight. Got: {texts}"
+                )
+
+
+class TestRefreshListLifecycle:
+    """Edge cases for ``_refresh_list()`` widget lifecycle integrity."""
+
+    async def test_refresh_list_idempotent(self) -> None:
+        """Call ``_refresh_list()`` twice in a row. Must not crash on the
+        second call."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # First refresh
+            screen._refresh_list()
+            # Second refresh — must not crash
+            screen._refresh_list()
+
+            list_view = screen.query_one(ListView)
+            assert list_view is not None, "ListView must still exist after double refresh"
+
+    async def test_refresh_list_handles_empty_store(self) -> None:
+        """``_refresh_list()`` with 0 sessions in the store must show the
+        empty-state message and not crash."""
+        store = FakeSessionStore()
+        # No sessions added — store is empty
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # Bug trigger: empty store → _show_empty → clear + _detach
+            screen._refresh_list()
+            await pilot.pause()
+
+            texts = _extract_list_item_texts(pilot)
+            assert any("No saved sessions yet" in t for t in texts), (
+                f"Expected empty-state message. Got: {texts}"
+            )
+
+    async def test_refresh_list_handles_single_session(self) -> None:
+        """A single session in the store → refresh → single ListItem, no crash."""
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(1)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            screen._refresh_list()
+            await pilot.pause()
+
+            texts = _extract_list_item_texts(pilot)
+            session_texts = [t for t in texts
+                             if "Test Session" not in t  # filter empty-state
+                             and "No saved sessions" not in t
+                             and "Session store not" not in t]
+            assert any(sessions[0].title in t for t in texts), (
+                f"Session title must appear. Got: {texts}"
+            )
+
+    async def test_refresh_list_replaces_all_items(self) -> None:
+        """3 sessions → refresh → 3 items. Then change the store to have only
+        1 session → second refresh → 1 item (no stale items from first refresh).
+
+        The second refresh must not leave orphaned DOM nodes from the first
+        refresh's items.
+        """
+        store = FakeSessionStore()
+        sessions = _make_fake_sessions(3)
+        _populate_fake_store(store, sessions)
+
+        browser = SessionBrowser(session_store=store)  # type: ignore[arg-type]
+        async with _run_browser(browser) as pilot:
+            await pilot.pause()
+            screen = _browser_from_pilot(pilot)
+
+            # First refresh — 3 items
+            screen._refresh_list()
+            await pilot.pause()
+            texts_before = _extract_list_item_texts(pilot)
+            title_count_before = sum(
+                1 for t in texts_before
+                if "Test Session" in t
+            )
+            assert title_count_before >= 3, (
+                f"Expected 3 sessions, got {title_count_before}: {texts_before}"
+            )
+
+            # Shrink the store: delete 2 sessions
+            store._sessions.pop(sessions[0].id)
+            store._sessions.pop(sessions[1].id)
+
+            # Second refresh — must not crash
+            screen._refresh_list()
+            await pilot.pause()
+
+            texts_after = _extract_list_item_texts(pilot)
+            title_count_after = sum(
+                1 for t in texts_after
+                if "Test Session" in t
+            )
+            assert title_count_after == 1, (
+                f"Expected 1 session after store shrink, got {title_count_after}. "
+                f"List items: {texts_after}"
+            )
+            # Must NOT contain stale items from removed sessions
+            assert sessions[0].title not in texts_after, (
+                f"Stale session '{sessions[0].title}' must NOT appear after removal"
+            )
+            assert sessions[1].title not in texts_after, (
+                f"Stale session '{sessions[1].title}' must NOT appear after removal"
+            )
